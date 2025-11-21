@@ -1,5 +1,6 @@
 using Infidex;
 using Infidex.Core;
+using Infidex.Api;
 
 namespace Infidex.Tests;
 
@@ -23,12 +24,12 @@ public class SearchEngineTests
         engine.IndexDocuments(docs);
         
         // Search for "fox"
-        var result = engine.Search("fox", maxResults: 10);
+        var result = engine.Search(new Query("fox", 10));
         
-        Assert.IsTrue(result.Results.Length > 0);
+        Assert.IsTrue(result.Records.Length > 0);
         
         // Documents 1 and 4 should be in results (they contain "fox")
-        var docIds = result.Results.Select(r => r.DocumentId).ToArray();
+        var docIds = result.Records.Select(r => r.DocumentId).ToArray();
         Assert.IsTrue(docIds.Contains(1L));
         Assert.IsTrue(docIds.Contains(4L));
     }
@@ -45,11 +46,11 @@ public class SearchEngineTests
             new Document(3L, "hello there")
         });
         
-        var result = engine.Search("hello world", maxResults: 10);
+        var result = engine.Search(new Query("hello world", 10));
         
-        Assert.IsTrue(result.Results.Length > 0);
-        Assert.AreEqual(1L, result.Results[0].DocumentId);
-        Assert.IsTrue(result.Results[0].Score > 200); // Should be high
+        Assert.IsTrue(result.Records.Length > 0);
+        Assert.AreEqual(1L, result.Records[0].DocumentId);
+        Assert.IsTrue(result.Records[0].Score > 200); // Should be high
     }
     
     [TestMethod]
@@ -65,11 +66,11 @@ public class SearchEngineTests
         });
         
         // Search with typo "batmam" should still find "batman"
-        var result = engine.Search("batmam", maxResults: 10);
+        var result = engine.Search(new Query("batmam", 10));
         
-        Assert.IsTrue(result.Results.Length > 0);
+        Assert.IsTrue(result.Records.Length > 0);
         // Document 1 should be first (contains "batman" which is close to "batmam")
-        Assert.AreEqual(1L, result.Results[0].DocumentId);
+        Assert.AreEqual(1L, result.Records[0].DocumentId);
     }
     
     [TestMethod]
@@ -82,9 +83,9 @@ public class SearchEngineTests
             new Document(1L, "hello world")
         });
         
-        var result = engine.Search("", maxResults: 10);
+        var result = engine.Search(new Query("", 10));
         
-        Assert.AreEqual(0, result.Results.Length);
+        Assert.AreEqual(0, result.Records.Length);
     }
     
     [TestMethod]
@@ -98,10 +99,10 @@ public class SearchEngineTests
             new Document(2L, "goodbye world")
         });
         
-        var result = engine.Search("xyzabc", maxResults: 10);
+        var result = engine.Search(new Query("xyzabc", 10));
         
         // Should return no results or very low scores
-        Assert.IsTrue(result.Results.Length == 0 || result.Results[0].Score < 50);
+        Assert.IsTrue(result.Records.Length == 0 || result.Records[0].Score < 50);
     }
     
     [TestMethod]
@@ -117,13 +118,13 @@ public class SearchEngineTests
             new Document(4L, "quick brown")
         });
         
-        var result = engine.Search("quick brown", maxResults: 10);
+        var result = engine.Search(new Query("quick brown", 10));
         
-        Assert.IsTrue(result.Results.Length > 0);
+        Assert.IsTrue(result.Records.Length > 0);
         
         // Document 4 should rank highest (exact phrase match)
         // Document 1 should also rank high (both words present)
-        var top = result.Results[0];
+        var top = result.Records[0];
         Assert.IsTrue(top.DocumentId == 4L || top.DocumentId == 1L);
     }
     
@@ -156,10 +157,10 @@ public class SearchEngineTests
             new Document(2L, "goodbye world")
         });
         
-        var result = engine.Search("hello", maxResults: 10);
+        var result = engine.Search(new Query("hello", 10));
         
-        Assert.IsTrue(result.Results.Length > 0);
-        Assert.AreEqual(1L, result.Results[0].DocumentId);
+        Assert.IsTrue(result.Records.Length > 0);
+        Assert.AreEqual(1L, result.Records[0].DocumentId);
     }
 }
 

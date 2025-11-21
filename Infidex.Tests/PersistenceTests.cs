@@ -1,5 +1,6 @@
 using Microsoft.VisualStudio.TestTools.UnitTesting;
 using Infidex.Core;
+using Infidex.Api;
 using System.IO;
 
 namespace Infidex.Tests;
@@ -23,9 +24,9 @@ public class PersistenceTests
             engine.IndexDocuments(documents);
             
             // Verify search before save
-            var resultsBefore = engine.Search("fox", 10);
-            Assert.AreEqual(1, resultsBefore.Results.Length);
-            Assert.AreEqual(1L, resultsBefore.Results[0].DocumentId);
+            var resultsBefore = engine.Search(new Query("fox", 10));
+            Assert.AreEqual(1, resultsBefore.Records.Length);
+            Assert.AreEqual(1L, resultsBefore.Records[0].DocumentId);
             
             // 2. Save
             engine.Save(filePath);
@@ -47,14 +48,14 @@ public class PersistenceTests
             );
             
             // 4. Verify search after load
-            var resultsAfter = loadedEngine.Search("fox", 10);
-            Assert.AreEqual(1, resultsAfter.Results.Length);
-            Assert.AreEqual(1L, resultsAfter.Results[0].DocumentId);
+            var resultsAfter = loadedEngine.Search(new Query("fox", 10));
+            Assert.AreEqual(1, resultsAfter.Records.Length);
+            Assert.AreEqual(1L, resultsAfter.Records[0].DocumentId);
             
             // Verify another term
-            var resultsDog = loadedEngine.Search("dog", 10);
-            Assert.AreEqual(1, resultsDog.Results.Length);
-            Assert.AreEqual(2L, resultsDog.Results[0].DocumentId);
+            var resultsDog = loadedEngine.Search(new Query("dog", 10));
+            Assert.AreEqual(1, resultsDog.Records.Length);
+            Assert.AreEqual(2L, resultsDog.Records[0].DocumentId);
             
             // Verify statistics
             var statsBefore = engine.GetStatistics();

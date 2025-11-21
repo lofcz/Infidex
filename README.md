@@ -1,10 +1,19 @@
-[![FastDex](https://shields.io/nuget/v/Infidex?v=302)](https://www.nuget.org/packages/Infidex)
+<div align="center">
 
-# Infidex Search Engine
+<img width="512" alt="Infidex" src="https://github.com/user-attachments/assets/e364378f-eba1-4a06-b609-f0dec056d1e3" />
 
-A high-performance, hybrid search engine that combines TF-IDF vector space retrieval with multi-algorithm lexical matching.
+# Infidex
 
-## Features
+**A .NET search engine with TF-IDF ranking, lexical Coverage, and VM-interpreted filtering**    
+
+[![Infidex](https://shields.io/nuget/v/Infidex?v=304&icon=nuget&label=Infidex)](https://www.nuget.org/packages/Infidex)
+[![License:MIT](https://img.shields.io/badge/License-MIT-34D058.svg)](https://opensource.org/license/mit)
+
+Infidex is a search engine based on pattern recognition. Learning from your data, Infidex automatically extracts features like frequency and rarity and embeds them into a multi-dimensional hypersphere for intelligent matching. This enables fuzzy querying with unparalleled typo tolerance, without any manual tuning. Zero dependencies, blazingly fast, built for developers who need search that _just works_.
+ 
+</div>
+
+## ✨ Features
 
 - **Two-Stage Architecture**: Combines relevancy ranking (Stage 1) with coverage matching (Stage 2)
 - **TF-IDF Vector Model**: Classic information retrieval with L2-normalized vectors
@@ -156,4 +165,4 @@ dotnet test
 
 ## License
 
-MIT License
+This library is licensed under the [MIT](https://github.com/lofcz/Infidex/blob/master/LICENSE) license. 💜

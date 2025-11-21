@@ -78,6 +78,35 @@ public class CoverageSetup
     public int CoverageDepth { get; set; } = 500;
     
     /// <summary>
+    /// Creates a default coverage setup
+    /// </summary>
+    public CoverageSetup()
+    {
+    }
+    
+    /// <summary>
+    /// Copy constructor - creates a deep copy of the coverage setup
+    /// </summary>
+    /// <param name="source">Source coverage setup to copy</param>
+    internal CoverageSetup(CoverageSetup source)
+    {
+        MinWordSize = source.MinWordSize;
+        LevenshteinMaxWordSize = source.LevenshteinMaxWordSize;
+        CoverageMinWordHitsAbs = source.CoverageMinWordHitsAbs;
+        CoverageMinWordHitsRelative = source.CoverageMinWordHitsRelative;
+        CoverageQLimitForErrorTolerance = source.CoverageQLimitForErrorTolerance;
+        CoverageLcsErrorToleranceRelativeq = source.CoverageLcsErrorToleranceRelativeq;
+        CoverWholeQuery = source.CoverWholeQuery;
+        CoverWholeWords = source.CoverWholeWords;
+        CoverFuzzyWords = source.CoverFuzzyWords;
+        CoverJoinedWords = source.CoverJoinedWords;
+        CoverPrefixSuffix = source.CoverPrefixSuffix;
+        Truncate = source.Truncate;
+        TruncationScore = source.TruncationScore;
+        CoverageDepth = source.CoverageDepth;
+    }
+    
+    /// <summary>
     /// Creates a default coverage setup with all features enabled
     /// </summary>
     public static CoverageSetup CreateDefault()

@@ -6,6 +6,30 @@
         <Nullable>enable</Nullable>
         <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
         <LangVersion>preview</LangVersion>
+        <GeneratePackageOnBuild>true</GeneratePackageOnBuild>
+        <Version>1.0.1</Version>
+        <Title>A high-performance, hybrid search engine that combines TF-IDF vector space retrieval with multi-algorithm lexical matching.</Title>
+        <Description>Infidex Search Engine
+A high-performance, hybrid search engine that combines TF-IDF vector space retrieval with multi-algorithm lexical matching.
+
+Features
+Two-Stage Architecture: Combines relevancy ranking (Stage 1) with coverage matching (Stage 2)
+TF-IDF Vector Model: Classic information retrieval with L2-normalized vectors
+Multi-Size N-grams: Character n-grams (2-3 or configurable) for morphological robustness
+Byte Quantization: 4x memory savings by storing weights as bytes (0-255)
+Bucket-Based Sorting: O(1) insertion and O(n) top-K retrieval using score buckets
+5 Lexical Matching Algorithms:
+Exact word matching
+Fuzzy matching (Levenshtein distance ≤ 1)
+Joined/split word detection
+Prefix/suffix matching
+LCS (Longest Common Subsequence)
+Bit-Parallel Levenshtein: Ultra-fast edit distance for strings ≤64 characters</Description>
+        <PackageProjectUrl>https://github.com/lofcz/Infidex</PackageProjectUrl>
+        <PackageIcon>logo.jpeg</PackageIcon>
+        <RepositoryUrl>https://github.com/lofcz/Infidex</RepositoryUrl>
+        <RepositoryType>git</RepositoryType>
+        <PackageTags>fulltext,search-engine,search,tfidf,inverted-index,index</PackageTags>
     </PropertyGroup>
 
     <PropertyGroup Condition="$([MSBuild]::IsTargetFrameworkCompatible('$(TargetFramework)', 'netstandard2.1'))">
@@ -14,6 +38,17 @@
 
     <ItemGroup>
         <InternalsVisibleTo Include="$(AssemblyName).Tests" />
+    </ItemGroup>
+
+    <ItemGroup>
+        <None Include="logo.jpeg" Pack="true" PackagePath="\"/>
+    </ItemGroup>
+
+    <ItemGroup>
+        <None Include="..\README.md">
+            <Pack>True</Pack>
+            <PackagePath>\</PackagePath>
+        </None>
     </ItemGroup>
 
 </Project>

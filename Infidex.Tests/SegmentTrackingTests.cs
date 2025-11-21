@@ -1,5 +1,6 @@
 using Microsoft.VisualStudio.TestTools.UnitTesting;
 using Infidex.Core;
+using Infidex.Api;
 using System.Linq;
 
 namespace Infidex.Tests;
@@ -7,15 +8,28 @@ namespace Infidex.Tests;
 [TestClass]
 public class SegmentTrackingTests
 {
+    // Helper method to create documents with the new multi-field API
+    private static Document CreateDoc(long documentKey, int segmentNumber, string text, string clientInfo)
+    {
+        var fields = new DocumentFields();
+        fields.AddField("content", text, Weight.Med, indexable: true);
+        var doc = new Document(documentKey, segmentNumber, fields, clientInfo);
+        
+        // Set IndexedText for tests that check it directly (normally set by VectorModel.IndexDocument)
+        doc.GetType().GetProperty("IndexedText")!.SetValue(doc, text);
+        
+        return doc;
+    }
+    
     [TestMethod]
     public void DocumentCollection_MultipleSegments_StoresCorrectly()
     {
         var collection = new DocumentCollection();
         
         // Add three segments of the same document
-        var seg0 = collection.AddDocument(new Document(100L, 0, "Segment zero text", ""));
-        var seg1 = collection.AddDocument(new Document(100L, 1, "Segment one text", ""));
-        var seg2 = collection.AddDocument(new Document(100L, 2, "Segment two text", ""));
+        var seg0 = collection.AddDocument(CreateDoc(100L, 0, "Segment zero text", ""));
+        var seg1 = collection.AddDocument(CreateDoc(100L, 1, "Segment one text", ""));
+        var seg2 = collection.AddDocument(CreateDoc(100L, 2, "Segment two text", ""));
         
         // Verify they have consecutive internal IDs
         Assert.AreEqual(0, seg0.Id);
@@ -33,10 +47,10 @@ public class SegmentTrackingTests
     {
         var collection = new DocumentCollection();
         
-        collection.AddDocument(new Document(100L, 0, "Seg 0", ""));
-        collection.AddDocument(new Document(100L, 1, "Seg 1", ""));
-        collection.AddDocument(new Document(100L, 2, "Seg 2", ""));
-        collection.AddDocument(new Document(200L, 0, "Different doc", ""));
+        collection.AddDocument(CreateDoc(100L, 0, "Seg 0", ""));
+        collection.AddDocument(CreateDoc(100L, 1, "Seg 1", ""));
+        collection.AddDocument(CreateDoc(100L, 2, "Seg 2", ""));
+        collection.AddDocument(CreateDoc(200L, 0, "Different doc", ""));
         
         var segments = collection.GetDocumentsForPublicKey(100L);
         
@@ -51,9 +65,9 @@ public class SegmentTrackingTests
     {
         var collection = new DocumentCollection();
         
-        collection.AddDocument(new Document(100L, 0, "Seg 0", ""));
-        collection.AddDocument(new Document(100L, 1, "Seg 1", ""));
-        collection.AddDocument(new Document(100L, 2, "Seg 2", ""));
+        collection.AddDocument(CreateDoc(100L, 0, "Seg 0", ""));
+        collection.AddDocument(CreateDoc(100L, 1, "Seg 1", ""));
+        collection.AddDocument(CreateDoc(100L, 2, "Seg 2", ""));
         
         var seg1 = collection.GetDocumentOfSegment(100L, 1);
         
@@ -67,7 +81,7 @@ public class SegmentTrackingTests
     {
         var collection = new DocumentCollection();
         
-        collection.AddDocument(new Document(100L, 0, "Seg 0", ""));
+        collection.AddDocument(CreateDoc(100L, 0, "Seg 0", ""));
         
         var seg5 = collection.GetDocumentOfSegment(100L, 5);
         
@@ -82,22 +96,22 @@ public class SegmentTrackingTests
         // Add segmented document - segment 1 contains "fox"
         var segments = new[]
         {
-            new Document(1L, 0, "Introduction to the topic of animals", ""),
-            new Document(1L, 1, "The quick brown fox jumps over the lazy dog", ""),
-            new Document(1L, 2, "Conclusion and summary of findings", "")
+            CreateDoc(1L, 0, "Introduction to the topic of animals", ""),
+            CreateDoc(1L, 1, "The quick brown fox jumps over the lazy dog", ""),
+            CreateDoc(1L, 2, "Conclusion and summary of findings", "")
         };
         
         engine.IndexDocuments(segments);
         
         // Search for "fox" - should find segment 1 as the best match
-        var result = engine.Search("fox", maxResults: 10);
+        var result = engine.Search(new Query("fox", 10));
         
         // Should return only one result per DocumentKey
-        Assert.AreEqual(1, result.Results.Length);
-        Assert.AreEqual(1L, result.Results[0].DocumentId);
+        Assert.AreEqual(1, result.Records.Length);
+        Assert.AreEqual(1L, result.Records[0].DocumentId);
         
         // The score should reflect the best-matching segment
-        Assert.IsTrue(result.Results[0].Score > 0);
+        Assert.IsTrue(result.Records[0].Score > 0);
     }
     
     [TestMethod]
@@ -109,28 +123,28 @@ public class SegmentTrackingTests
         var allDocs = new[]
         {
             // Document 1: Three segments, "batman" in segment 1
-            new Document(1L, 0, "Introduction chapter one", ""),
-            new Document(1L, 1, "Batman fights crime in Gotham City", ""),
-            new Document(1L, 2, "Conclusion chapter one", ""),
+            CreateDoc(1L, 0, "Introduction chapter one", ""),
+            CreateDoc(1L, 1, "Batman fights crime in Gotham City", ""),
+            CreateDoc(1L, 2, "Conclusion chapter one", ""),
             
             // Document 2: Two segments, "batman" in segment 0
-            new Document(2L, 0, "Batman and Robin save the day", ""),
-            new Document(2L, 1, "The end of their adventure", ""),
+            CreateDoc(2L, 0, "Batman and Robin save the day", ""),
+            CreateDoc(2L, 1, "The end of their adventure", ""),
             
-            // Document 3: No segments, just regular document
-            new Document(3L, "Superman flies faster than a speeding bullet")
+            // Document 3: No segments, just regular document  
+            CreateDoc(3L, 0, "Superman flies faster than a speeding bullet", "")
         };
         
         engine.IndexDocuments(allDocs);
         
-        var result = engine.Search("batman", maxResults: 10);
+        var result = engine.Search(new Query("batman", 10));
         
         // Should return 2 results (docs 1 and 2), not 6 (total segments including doc 3)
-        Assert.AreEqual(2, result.Results.Length);
+        Assert.AreEqual(2, result.Records.Length);
         
         // Both should be batman-containing documents
-        Assert.IsTrue(result.Results.Any(r => r.DocumentId == 1L));
-        Assert.IsTrue(result.Results.Any(r => r.DocumentId == 2L));
+        Assert.IsTrue(result.Records.Any(r => r.DocumentId == 1L));
+        Assert.IsTrue(result.Records.Any(r => r.DocumentId == 2L));
     }
     
     [TestMethod]
@@ -140,15 +154,15 @@ public class SegmentTrackingTests
         
         engine.IndexDocuments(new[]
         {
-            new Document(1L, 0, "The cat sat on the mat", ""),
-            new Document(1L, 1, "The dog ran through the park", ""),
-            new Document(1L, 2, "The bird flew in the sky", "")
+            CreateDoc(1L, 0, "The cat sat on the mat", ""),
+            CreateDoc(1L, 1, "The dog ran through the park", ""),
+            CreateDoc(1L, 2, "The bird flew in the sky", "")
         });
         
-        var result = engine.Search("batman", maxResults: 10);
+        var result = engine.Search(new Query("batman", 10));
         
         // Should return no results
-        Assert.AreEqual(0, result.Results.Length);
+        Assert.AreEqual(0, result.Records.Length);
     }
     
     [TestMethod]
@@ -158,15 +172,15 @@ public class SegmentTrackingTests
         
         engine.IndexDocuments(new[]
         {
-            new Document(1L, 0, "The cat sat on the mat", ""),
-            new Document(2L, 0, "The dog ran through the park", ""),
-            new Document(3L, 0, "The bird flew in the sky", "")
+            CreateDoc(1L, 0, "The cat sat on the mat", ""),
+            CreateDoc(2L, 0, "The dog ran through the park", ""),
+            CreateDoc(3L, 0, "The bird flew in the sky", "")
         });
         
-        var result = engine.Search("batman", maxResults: 10);
+        var result = engine.Search(new Query("batman", 10));
         
         // Should return no results
-        Assert.AreEqual(0, result.Results.Length);
+        Assert.AreEqual(0, result.Records.Length);
     }
     
     [TestMethod]
@@ -178,22 +192,22 @@ public class SegmentTrackingTests
         var allDocs = new[]
         {
             // Segmented document
-            new Document(1L, 0, "Chapter 1 introduction", ""),
-            new Document(1L, 1, "The hero begins his journey", ""),
+            CreateDoc(1L, 0, "Chapter 1 introduction", ""),
+            CreateDoc(1L, 1, "The hero begins his journey", ""),
             
             // Non-segmented documents
-            new Document(2L, "The hero saves the day"),
-            new Document(3L, "A story about courage")
+            CreateDoc(2L, 0, "The hero saves the day", ""),
+            CreateDoc(3L, 0, "A story about courage", "")
         };
         
         engine.IndexDocuments(allDocs);
         
-        var result = engine.Search("hero", maxResults: 10);
+        var result = engine.Search(new Query("hero", 10));
         
         // Should return 2 results: doc 1 (best segment) and doc 2
-        Assert.AreEqual(2, result.Results.Length);
-        Assert.IsTrue(result.Results.Any(r => r.DocumentId == 1L));
-        Assert.IsTrue(result.Results.Any(r => r.DocumentId == 2L));
+        Assert.AreEqual(2, result.Records.Length);
+        Assert.IsTrue(result.Records.Any(r => r.DocumentId == 1L));
+        Assert.IsTrue(result.Records.Any(r => r.DocumentId == 2L));
     }
     
     [TestMethod]
@@ -202,9 +216,9 @@ public class SegmentTrackingTests
         var collection = new DocumentCollection();
         
         // Add segmented document
-        collection.AddDocument(new Document(1L, 0, "Segment 0 with batman", ""));
-        collection.AddDocument(new Document(1L, 1, "Segment 1 with batman", ""));
-        collection.AddDocument(new Document(1L, 2, "Segment 2 with batman", ""));
+        collection.AddDocument(CreateDoc(1L, 0, "Segment 0 with batman", ""));
+        collection.AddDocument(CreateDoc(1L, 1, "Segment 1 with batman", ""));
+        collection.AddDocument(CreateDoc(1L, 2, "Segment 2 with batman", ""));
         
         // Verify segments exist
         var allSegments = collection.GetDocumentsForPublicKey(1L);
@@ -254,19 +268,19 @@ public class SegmentTrackingTests
         var segments = new Document[10];
         for (int i = 0; i < 10; i++)
         {
-            segments[i] = new Document(1L, i, $"Segment {i} text content", $"metadata {i}");
+            segments[i] = CreateDoc(1L, i, $"Segment {i} text content", $"metadata {i}");
         }
         
         // Add one segment with the search term
-        segments[5] = new Document(1L, 5, "This segment contains batman", "metadata 5");
+        segments[5] = CreateDoc(1L, 5, "This segment contains batman", "metadata 5");
         
         engine.IndexDocuments(segments);
         
-        var result = engine.Search("batman", maxResults: 10);
+        var result = engine.Search(new Query("batman", 10));
         
         // Should return exactly 1 result (not 10)
-        Assert.AreEqual(1, result.Results.Length);
-        Assert.AreEqual(1L, result.Results[0].DocumentId);
+        Assert.AreEqual(1, result.Records.Length);
+        Assert.AreEqual(1L, result.Records[0].DocumentId);
     }
 }
 

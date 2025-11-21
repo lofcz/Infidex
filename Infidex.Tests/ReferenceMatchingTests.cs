@@ -1,5 +1,6 @@
 using Microsoft.VisualStudio.TestTools.UnitTesting;
 using Infidex.Core;
+using Infidex.Api;
 
 namespace Infidex.Tests;
 
@@ -38,61 +39,61 @@ public class ReferenceMatchingTests
     [TestMethod]
     public void Search_Batman_ReturnsCorrectDocuments()
     {
-        var result = _engine.Search("batman", maxResults: 10);
+        var result = _engine.Search(new Query("batman", 10));
         
         // Expected: 1 result, Doc 6 at position 0
-        Assert.AreEqual(1, result.Results.Length, "Should return exactly 1 result");
-        Assert.AreEqual(6L, result.Results[0].DocumentId, "First result should be Doc 6");
+        Assert.AreEqual(1, result.Records.Length, "Should return exactly 1 result");
+        Assert.AreEqual(6L, result.Records[0].DocumentId, "First result should be Doc 6");
     }
     
     [TestMethod]
     public void Search_QickFux_ReturnsCorrectDocuments()
     {
-        var result = _engine.Search("qick fux", maxResults: 10);
+        var result = _engine.Search(new Query("qick fux", 10));
         
         // Expected: 2 results
         // Position 0: Doc 5
         // Position 1: Doc 1
-        Assert.AreEqual(2, result.Results.Length, "Should return exactly 2 results");
-        Assert.AreEqual(5L, result.Results[0].DocumentId, "First result should be Doc 5");
-        Assert.AreEqual(1L, result.Results[1].DocumentId, "Second result should be Doc 1");
+        Assert.AreEqual(2, result.Records.Length, "Should return exactly 2 results");
+        Assert.AreEqual(5L, result.Records[0].DocumentId, "First result should be Doc 5");
+        Assert.AreEqual(1L, result.Records[1].DocumentId, "Second result should be Doc 1");
     }
     
     [TestMethod]
     public void Search_Battamam_ReturnsCorrectDocuments()
     {
-        var result = _engine.Search("battamam", maxResults: 10);
+        var result = _engine.Search(new Query("battamam", 10));
         
         // Debug: Print all results
-        Console.WriteLine($"battamam returned {result.Results.Length} results:");
-        foreach (var r in result.Results)
+        Console.WriteLine($"battamam returned {result.Records.Length} results:");
+        foreach (var r in result.Records)
         {
             Console.WriteLine($"  [{r.Score:D3}] Doc {r.DocumentId}");
         }
         
         // Expected: 1 result, Doc 6 at position 0
-        Assert.AreEqual(1, result.Results.Length, "Should return exactly 1 result");
-        Assert.AreEqual(6L, result.Results[0].DocumentId, "First result should be Doc 6");
+        Assert.AreEqual(1, result.Records.Length, "Should return exactly 1 result");
+        Assert.AreEqual(6L, result.Records[0].DocumentId, "First result should be Doc 6");
     }
     
     [TestMethod]
     public void Search_NewYork_ReturnsCorrectDocuments()
     {
-        var result = _engine.Search("new york", maxResults: 10);
+        var result = _engine.Search(new Query("new york", 10));
         
         // Expected: 1 result, Doc 8 at position 0
-        Assert.AreEqual(1, result.Results.Length, "Should return exactly 1 result");
-        Assert.AreEqual(8L, result.Results[0].DocumentId, "First result should be Doc 8");
+        Assert.AreEqual(1, result.Records.Length, "Should return exactly 1 result");
+        Assert.AreEqual(8L, result.Records[0].DocumentId, "First result should be Doc 8");
     }
     
     [TestMethod]
     public void Search_Speeding_ReturnsCorrectDocuments()
     {
-        var result = _engine.Search("speeding", maxResults: 10);
+        var result = _engine.Search(new Query("speeding", 10));
         
         // Expected: 1 result, Doc 7 at position 0
-        Assert.AreEqual(1, result.Results.Length, "Should return exactly 1 result");
-        Assert.AreEqual(7L, result.Results[0].DocumentId, "First result should be Doc 7");
+        Assert.AreEqual(1, result.Records.Length, "Should return exactly 1 result");
+        Assert.AreEqual(7L, result.Records[0].DocumentId, "First result should be Doc 7");
     }
 }
 

@@ -4,6 +4,7 @@ using CsvHelper;
 using CsvHelper.Configuration;
 using CsvHelper.Configuration.Attributes;
 using Infidex.Core;
+using Infidex.Api;
 
 namespace Infidex.Example;
 
@@ -48,9 +49,9 @@ public class MovieExample
         // Create Search Engine
         var engine = SearchEngine.CreateDefault();
         
-        // Index Documents
-        Console.WriteLine("Indexing movies...");
-        var documents = records.Select((r, i) => new Document(i, r.Title)).ToList();
+        // Index Documents with multi-field support
+        Console.WriteLine("Indexing movies with weighted fields (Title=High, Description=Med, Genre=Low)...");
+        var documents = records.Select((r, i) => CreateMovieDocument(i, r)).ToList();
         
         var sw = Stopwatch.StartNew();
         // Use the new IndexDocuments method
@@ -64,31 +65,41 @@ public class MovieExample
         Console.WriteLine($"Indexing complete in {sw.ElapsedMilliseconds}ms.");
 
         // Perform Queries
-        SearchAndPrint(engine, "Shawshank");
-        SearchAndPrint(engine, "Shaaawshank");
-        SearchAndPrint(engine, "Shaa awashank");
-        SearchAndPrint(engine, "Shaa awa shank");
+        SearchAndPrint(engine, new Query("redemption shank"));
+        SearchAndPrint(engine, new Query("Shaaawshank"));
+        SearchAndPrint(engine, new Query("Shaa awashank"));
+        SearchAndPrint(engine, new Query("Shaa awa shank"));
     }
 
-    private static void SearchAndPrint(SearchEngine engine, string query)
+    private static void SearchAndPrint(SearchEngine engine, Query query)
     {
-        Console.WriteLine($"\nSearching for: '{query}'");
+        Console.WriteLine($"\nSearching for: '{query.Text}'");
         var sw = Stopwatch.StartNew();
         var result = engine.Search(query);
         sw.Stop();
         Console.WriteLine($"Search took {sw.ElapsedMilliseconds}ms");
         
-        if (result.Results.Length == 0)
+        if (result.Records.Length == 0)
         {
             Console.WriteLine("No results found.");
         }
         else
         {
-            foreach (var hit in result.Results)
+            foreach (var hit in result.Records)
             {
                 var doc = engine.GetDocument(hit.DocumentId);
-                Console.WriteLine($"[{hit.Score}] {doc?.IndexedText}");
+                if (doc != null)
+                {
+                    var titleField = doc.Fields.GetField("title");
+                    var title = titleField?.Value?.ToString() ?? doc.IndexedText;
+                    Console.WriteLine($"[{hit.Score}] {title}");
+                }
             }
         }
+    }
+    
+    private static Document CreateMovieDocument(long id, MovieRecord movie)
+    {
+        return new Document(id, movie.Title);
     }
 }

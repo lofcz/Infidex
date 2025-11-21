@@ -51,7 +51,81 @@ public class Term
     }
 
     /// <summary>
+    /// Adds an occurrence of this term during the first indexing cycle.
+    /// This method builds the inverted lists incrementally as tokens are processed.
+    /// Matches the reference implementation's FirstCycleAdd behavior.
+    /// </summary>
+    /// <param name="documentIndex">Internal document index.</param>
+    /// <param name="stopTermLimit">Maximum postings allowed before marking as stop term.</param>
+    /// <param name="removeDuplicates">If true, don't increment TF for duplicate tokens (used for segments).</param>
+    /// <param name="fieldWeight">Field importance multiplier (1.0 for single field, 1.5/1.25/1.0 for multi-field).</param>
+    /// <returns>True if the term was added, false if it became a stop term.</returns>
+    public bool FirstCycleAdd(int documentIndex, int stopTermLimit, bool removeDuplicates, float fieldWeight = 1.0f)
+    {
+        // Lazily allocate backing lists with capacity based on document frequency
+        if (_weights == null)
+        {
+            _weights = new List<byte>(_documentFrequency);
+            _documentIds = new List<int>(_documentFrequency);
+        }
+
+        // If already marked as stop term, ignore
+        if (_documentFrequency < 0)
+            return false;
+
+        // Check if we're within the stop term limit
+        if (_weights != null && _documentIds != null && _weights.Count < stopTermLimit)
+        {
+            if (_documentIds.Count == 0)
+            {
+                // First occurrence of this term
+                // Apply field weight to the initial term frequency
+                byte initialWeight = (byte)Math.Min(Math.Round(fieldWeight), byte.MaxValue);
+                _weights.Add(initialWeight);
+                _documentIds.Add(documentIndex);
+            }
+            else
+            {
+                int lastDocId = _documentIds[_documentIds.Count - 1];
+
+                if (lastDocId != documentIndex)
+                {
+                    // New document
+                    byte initialWeight = (byte)Math.Min(Math.Round(fieldWeight), byte.MaxValue);
+                    _weights.Add(initialWeight);
+                    _documentIds.Add(documentIndex);
+                }
+                else
+                {
+                    // Same document - increment term frequency unless removeDuplicates is set
+                    if (!removeDuplicates && _weights != null)
+                    {
+                        int lastWeightIndex = _weights.Count - 1;
+                        // When incrementing, add the field weight
+                        float newWeight = _weights[lastWeightIndex] + fieldWeight;
+                        if (newWeight <= byte.MaxValue)
+                        {
+                            _weights[lastWeightIndex] = (byte)Math.Round(newWeight);
+                            
+                            // Adjust document frequency counter since we're not adding a new document
+                            _documentFrequency--;
+                        }
+                    }
+                }
+            }
+            return true;
+        }
+
+        // Term exceeded stop term limit - mark as stop term and clear data
+        _documentFrequency = -1;
+        _weights?.Clear();
+        _documentIds?.Clear();
+        return false;
+    }
+    
+    /// <summary>
     /// Adds or updates the raw term frequency for a document during indexing.
+    /// Legacy method - prefer using FirstCycleAdd for streaming indexing.
     /// </summary>
     /// <param name="documentId">Internal document index.</param>
     /// <param name="rawTermFrequency">
@@ -170,17 +244,6 @@ public class Term
             float norm = vectorLengths[_documentIds[i]];
             float normalized = norm > 0f ? tfIdf / norm : 0f;
             byte quantized = ByteAsFloat.F2B(normalized);
-            
-            // Debug logging for specific terms/docs
-            if (System.Diagnostics.Debugger.IsAttached || Environment.GetEnvironmentVariable("INFIDEX_TFIDF_DEBUG") == "1")
-            {
-                // Log details for all terms with docId 5 (Doc 6, internalId=5)
-                if (_documentIds[i] == 5)
-                {
-                    Console.WriteLine($"[TERM-NORM] docId={_documentIds[i]}, df={_documentFrequency}, rawTf={rawTf}, tfIdf={tfIdf:F6}, norm={norm:F6}, normalized={normalized:F6}, quantized={quantized}");
-                }
-            }
-            
             _weights[i] = quantized;
         }
     }

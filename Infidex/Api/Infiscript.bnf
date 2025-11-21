@@ -1,0 +1,110 @@
+<filter_expression> ::= <ternary_expression>
+<ternary_expression> ::= <or_expression> <ternary_tail>
+<ternary_tail> ::= "?" <ternary_expression> ":" <ternary_expression> | E
+<or_expression> ::= <and_expression> <or_tail>
+<or_tail> ::= <or_operator> <and_expression> <or_tail> | E
+<or_operator> ::= "OR" | "||" | "|"
+<and_expression> ::= <not_expression> <and_tail>
+<and_tail> ::= <and_operator> <not_expression> <and_tail> | E
+<and_operator> ::= "AND" | "&&" | "&"
+<not_expression> ::= <not_operator> <primary_expression> | <primary_expression>
+<not_operator> ::= "NOT" | "!"
+<primary_expression> ::= <parenthesized_expression>
+                       | <null_check>
+                       | <between_expression>
+                       | <in_expression>
+                       | <string_operation>
+                       | <regex_match>
+                       | <comparison_expression>
+<parenthesized_expression> ::= "(" <ternary_expression> ")"
+<null_check> ::= <identifier> ( <is_null> | <is_not_null> )
+<is_null> ::= "IS" "NULL"
+<is_not_null> ::= "IS" "NOT" "NULL"
+<between_expression> ::= <identifier> "BETWEEN" <value> "AND" <value>
+<in_expression> ::= <identifier> "IN" "(" <value> <value_list> ")"
+<value_list> ::= "," <value> <value_list> | E
+<string_operation> ::= <identifier> <string_operator> <string_value>
+<string_operator> ::= "CONTAINS"
+                    | "STARTS" "WITH"
+                    | "ENDS" "WITH"
+                    | "LIKE"
+<regex_match> ::= <identifier> "MATCHES" <string_value>
+<comparison_expression> ::= <identifier> <comparison_operator> <value>
+<comparison_operator> ::= "="
+                        | "!="
+                        | "<="
+                        | "<"
+                        | ">="
+                        | ">"
+<value> ::= <string_value>
+          | <number_value>
+          | <identifier>
+<string_value> ::= "'" <string_chars> "'"
+<string_chars> ::= <string_char> <string_chars> | E
+<string_char> ::= <lower> | <upper> | <digit> | " " | "." | "_" | "@" | "/" | ":" | "%" | "?" | "(" | ")" | "#" | "$" | "~" | "`" | ";" | ","
+<number_value> ::= <optional_minus> <digits> <optional_decimal>
+<optional_minus> ::= "-" | E
+<digits> ::= <digit> <more_digits>
+<more_digits> ::= <digit> <more_digits> | E
+<optional_decimal> ::= "." <digits> | E
+<identifier> ::= <letter> <ident_tail>
+<ident_tail> ::= <ident_rest> <ident_tail> | E
+<ident_rest> ::= <letter> | <digit> | "_"
+<letter> ::= <lower> | <upper>
+<lower> ::= "a" | "b" | "c" | "d" | "e" | "f" | "g" | "h" | "i" | "j" | "k" | "l" | "m" | "n" | "o" | "p" | "q" | "r" | "s" | "t" | "u" | "v" | "w" | "x" | "y" | "z"
+<upper> ::= "A" | "B" | "C" | "D" | "E" | "F" | "G" | "H" | "I" | "J" | "K" | "L" | "M" | "N" | "O" | "P" | "Q" | "R" | "S" | "T" | "U" | "V" | "W" | "X" | "Y" | "Z"
+<digit> ::= "0" | "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9"
+
+/* no comments are allowed ABOVE this point! */
+/*
+   INFISCRIPT - Infidex Filter DSL
+   
+   This is the authoritative grammar specification for the Infidex filter expression language.
+   Infiscript supports SQL-like WHERE clause syntax with various operators and boolean logic.
+   
+   All keywords and operators are case-insensitive.
+   Note: Whitespace is implicitly allowed between tokens but not shown in the BNF for readability.
+   
+   Examples of valid Infiscript expressions:
+   
+   genre = 'Fantasy'
+   year >= 2000
+   year BETWEEN 2000 AND 2020
+   genre IN ('Fantasy', 'Horror', 'Sci-Fi')
+   title CONTAINS 'magic'
+   title STARTS WITH 'The'
+   title ENDS WITH 'Kingdom'
+   title LIKE '%Harry%'
+   email MATCHES '^[\w\.-]+@[\w\.-]+\.\w+$'
+   description IS NULL
+   description IS NOT NULL
+   NOT (genre = 'Horror')
+   genre = 'Fantasy' AND year >= 2000
+   genre = 'Fantasy' && year >= 2000
+   (genre = 'Fantasy' AND year >= 2000) OR (genre = 'Horror' AND year >= 1980)
+   (genre = 'Fantasy' && year >= 2000) || (genre = 'Horror' && year >= 1980)
+   score >= 90 ? grade = 'A' : grade = 'F'
+   age >= 18 ? 'adult' : 'minor'
+   premium = 'yes' ? 100 : 50
+   available = 'yes' ? price >= 100 : 'unavailable'
+   
+   Operator precedence (highest to lowest):
+   1. Parentheses ()
+   2. NOT, !
+   3. AND, &&, &
+   4. OR, ||, |
+   5. Ternary ? : (lowest precedence, right-associative)
+   
+   Ternary Operator:
+   The ternary operator (? :) allows conditional expressions. It supports:
+   - Boolean filter branches: condition ? filter1 : filter2
+   - Literal value branches: condition ? 'value1' : 'value2'
+   - Numeric literal branches: condition ? 100 : 50
+   - Mixed branches: condition ? filter : 'literal'
+   - Chaining (right-associative): a ? b : c ? d : e is parsed as a ? b : (c ? d : e)
+   
+   Bytecode Format:
+   Filters can be compiled to INFISCRIPT-V1 bytecode format for optimized execution
+   and persistence. See BytecodeSerializer for binary format specification.
+*/
+

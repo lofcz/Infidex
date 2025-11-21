@@ -7,3 +7,5 @@ release
 .code
 .idea
 Infidex.sln.DotSettings.user
+reference
+test-output.txt

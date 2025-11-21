@@ -8,7 +8,12 @@ namespace Infidex.Core;
 public class ConfigurationParameters
 {
     private static readonly Dictionary<int, ConfigurationParameters> PredefinedConfigs = [];
-    private static readonly float[] SingleFieldWeight = [1.0f];
+    
+    /// <summary>
+    /// Default field weights for High, Med, Low field importance.
+    /// Index 0 = High (1.5x), Index 1 = Med (1.25x), Index 2 = Low (1.0x)
+    /// </summary>
+    public static readonly float[] DefaultFieldWeights = [1.5f, 1.25f, 1.0f];
     
     public int[] IndexSizes { get; set; }
     public int StartPadSize { get; set; }
@@ -38,7 +43,7 @@ public class ConfigurationParameters
         MaxDocuments = 5_000_000;
         DeleteTextAfterIndexing = false;
         FilterCacheSize = 0;
-        FieldWeights = SingleFieldWeight;
+        FieldWeights = DefaultFieldWeights;
     }
     
     static ConfigurationParameters()
@@ -90,7 +95,7 @@ public class ConfigurationParameters
             TokenizerSetup = new TokenizerSetup(delimiters, highResolutionMode: false, removeDuplicateTokens: true),
             DeleteTextAfterIndexing = false,
             FilterCacheSize = 0,
-            FieldWeights = SingleFieldWeight
+            FieldWeights = DefaultFieldWeights
         };
         
         // Config 103: Single n-gram, similar to 100
@@ -108,7 +113,7 @@ public class ConfigurationParameters
             TokenizerSetup = new TokenizerSetup(delimiters, highResolutionMode: false, removeDuplicateTokens: true),
             DeleteTextAfterIndexing = false,
             FilterCacheSize = 0,
-            FieldWeights = SingleFieldWeight
+            FieldWeights = DefaultFieldWeights
         };
         
         // Config 400: Advanced with WordMatcher and auto-segmentation
@@ -127,7 +132,7 @@ public class ConfigurationParameters
             DeleteTextAfterIndexing = true,
             AutoSegmentationSetup = new AutoSegmentationSetup(200, 0.2),
             FilterCacheSize = 200_000,
-            FieldWeights = SingleFieldWeight,
+            FieldWeights = DefaultFieldWeights,
             WordMatcherSetup = new WordMatcherSetup(
                 MaximumWordSizeExact: 8,
                 MaximumWordSizeLD1: 8,
@@ -153,7 +158,7 @@ public class ConfigurationParameters
             DeleteTextAfterIndexing = true,
             AutoSegmentationSetup = new AutoSegmentationSetup(200, 0.2),
             FilterCacheSize = 200_000,
-            FieldWeights = SingleFieldWeight,
+            FieldWeights = DefaultFieldWeights,
             WordMatcherSetup = new WordMatcherSetup(
                 MaximumWordSizeExact: 8,
                 MaximumWordSizeLD1: 8,

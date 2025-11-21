@@ -15,6 +15,7 @@ public class VectorModel
     private readonly TermCollection _termCollection;
     private readonly DocumentCollection _documents;
     private readonly int _stopTermLimit;
+    private readonly float[] _fieldWeights;
     
     /// <summary>
     /// Event fired when indexing progress changes (0-100%)
@@ -28,19 +29,19 @@ public class VectorModel
     /// </summary>
     public bool EnableDebugLogging { get; set; }
     
-    public VectorModel(Tokenizer tokenizer, int stopTermLimit = 1_250_000)
+    public VectorModel(Tokenizer tokenizer, int stopTermLimit = 1_250_000, float[]? fieldWeights = null)
     {
         _tokenizer = tokenizer;
         _stopTermLimit = stopTermLimit;
         _termCollection = new TermCollection();
         _documents = new DocumentCollection();
+        _fieldWeights = fieldWeights ?? ConfigurationParameters.DefaultFieldWeights;
     }
     
     /// <summary>
         /// Indexes a single document and returns the stored document (with internal Id).
-        /// (for document frequency / stop-term detection) and store raw term frequencies
-        /// per (term, document) pair. TF-IDF weights are computed later in
-        /// <see cref="BuildInvertedLists"/>.
+        /// Uses streaming approach with multi-field support and field weights.
+        /// Matches the reference implementation's indexing flow.
         /// </summary>
         public Document IndexDocument(Document document)
         {
@@ -50,58 +51,65 @@ public class VectorModel
             // Tokenize the text - pass segment continuation flag
             bool isSegmentContinuation = doc.SegmentNumber > 0;
             
+            // Get searchable text from fields with boundary markers
+            (ushort Position, byte WeightIndex)[] fieldBoundaries = 
+                document.Fields.GetSearchableTexts('§', out string concatenatedText);
+            
+            // Store the concatenated text for later reference
+            doc.IndexedText = concatenatedText;
+            
             // Match original behavior: apply case normalization before indexing
-            string text = document.IndexedText ?? string.Empty;
-            text = text.ToLowerInvariant();
+            string text = concatenatedText.ToLowerInvariant();
             List<Shingle> shingles = _tokenizer.TokenizeForIndexing(text, isSegmentContinuation);
             
-            // Count term frequencies for this document
-            Dictionary<string, int> termFrequencies = new Dictionary<string, int>();
+            // Stream tokens directly to the inverted index with field weight application
             foreach (Shingle shingle in shingles)
             {
-                if (!termFrequencies.TryGetValue(shingle.Text, out int count))
-                {
-                    termFrequencies[shingle.Text] = 1;
-                }
-                else
-                {
-                    termFrequencies[shingle.Text] = count + 1;
-                }
-            }
-            
-            // Debug logging for specific terms
-            bool debugEnabled = Environment.GetEnvironmentVariable("INFIDEX_INDEX_DEBUG") == "1";
-            if (debugEnabled && termFrequencies.ContainsKey("bat"))
-            {
-                Console.WriteLine($"[INDEX-DEBUG] Doc {document.DocumentKey} (internalId={doc.Id}): text=\"{document.IndexedText}\"");
-                Console.WriteLine($"[INDEX-DEBUG] Total shingles: {shingles.Count}");
-                Console.WriteLine($"[INDEX-DEBUG] Term 'bat' frequency in this doc: {termFrequencies["bat"]}");
-            }
-            
-            // Feed corpus statistics (document frequency) and per-document TF into Term
-            foreach (KeyValuePair<string, int> kvp in termFrequencies)
-            {
-                Term term = _termCollection.CountTermUsage(kvp.Key, _stopTermLimit, forFastInsert: false);
+                // Determine which field this token belongs to based on its position
+                float fieldWeight = DetermineFieldWeight(shingle.Position, fieldBoundaries);
                 
-                // If the term became a stop term, skip storing postings for it
-                if (term.DocumentFrequency < 0)
-                    continue;
-
-                if (debugEnabled && kvp.Key == "bat")
-                {
-                    Console.WriteLine($"[INDEX-DEBUG] Before AddOrUpdate: term='bat', docFreq={term.DocumentFrequency}, docId={doc.Id}, tf={kvp.Value}");
-                }
-
-                term.AddOrUpdateDocumentFrequency(doc.Id, kvp.Value);
+                // Get or create term and increment global document frequency counter
+                Term term = _termCollection.CountTermUsage(shingle.Text, _stopTermLimit, forFastInsert: false);
                 
-                if (debugEnabled && kvp.Key == "bat")
-                {
-                    Console.WriteLine($"[INDEX-DEBUG] After AddOrUpdate: term='bat', docFreq={term.DocumentFrequency}");
-                }
+                // Add this occurrence to the term's posting list with field weight
+                // removeDuplicates flag: set to true for segment continuations to avoid
+                // counting the same token multiple times across segment boundaries
+                term.FirstCycleAdd(doc.Id, _stopTermLimit, removeDuplicates: isSegmentContinuation, fieldWeight);
             }
 
             return doc;
         }
+    
+    /// <summary>
+    /// Determines the field weight for a token based on its position in the concatenated text.
+    /// </summary>
+    private float DetermineFieldWeight(int tokenPosition, (ushort Position, byte WeightIndex)[] fieldBoundaries)
+    {
+        if (fieldBoundaries.Length == 0)
+            return 1.0f; // Default weight if no fields
+        
+        // Find the field that contains this token position
+        // Field boundaries are sorted by position, so we find the last boundary before tokenPosition
+        byte weightIndex = 0; // Default to first field's weight
+        
+        for (int i = 0; i < fieldBoundaries.Length; i++)
+        {
+            if (fieldBoundaries[i].Position <= tokenPosition)
+            {
+                weightIndex = fieldBoundaries[i].WeightIndex;
+            }
+            else
+            {
+                break; // We've gone past the token position
+            }
+        }
+        
+        // weightIndex is 0=High, 1=Med, 2=Low, which matches our _fieldWeights array indices
+        if (weightIndex < _fieldWeights.Length)
+            return _fieldWeights[weightIndex];
+        
+        return 1.0f; // Fallback
+    }
     
     /// <summary>
     /// Builds inverted lists with batch processing and progress reporting.
@@ -410,9 +418,9 @@ public class VectorModel
     /// <summary>
     /// Loads an index from a binary file.
     /// </summary>
-    public static VectorModel Load(string filePath, Tokenizer tokenizer, int stopTermLimit = 1_250_000)
+    public static VectorModel Load(string filePath, Tokenizer tokenizer, int stopTermLimit = 1_250_000, float[]? fieldWeights = null)
     {
-        VectorModel model = new VectorModel(tokenizer, stopTermLimit);
+        VectorModel model = new VectorModel(tokenizer, stopTermLimit, fieldWeights);
         
         using (FileStream stream = File.OpenRead(filePath))
         using (BinaryReader reader = new BinaryReader(stream))
@@ -426,9 +434,9 @@ public class VectorModel
     /// <summary>
     /// Asynchronously loads an index from a binary file.
     /// </summary>
-    public static async Task<VectorModel> LoadAsync(string filePath, Tokenizer tokenizer, int stopTermLimit = 1_250_000)
+    public static async Task<VectorModel> LoadAsync(string filePath, Tokenizer tokenizer, int stopTermLimit = 1_250_000, float[]? fieldWeights = null)
     {
-        return await Task.Run(() => Load(filePath, tokenizer, stopTermLimit));
+        return await Task.Run(() => Load(filePath, tokenizer, stopTermLimit, fieldWeights));
     }
     
     private void LoadFromStream(BinaryReader reader)
@@ -448,7 +456,11 @@ public class VectorModel
             int seg = reader.ReadInt32();
             int jsonIdx = reader.ReadInt32();
             
-            Document doc = new Document(key, seg, text, info) { JsonIndex = jsonIdx };
+            // Create fields from loaded text (backward compatibility with old format)
+            var fields = new Api.DocumentFields();
+            fields.AddField("content", text, Api.Weight.Med, indexable: true);
+            
+            Document doc = new Document(key, seg, fields, info) { JsonIndex = jsonIdx };
             Document addedDoc = _documents.AddDocument(doc);
             if (addedDoc.Id != id)
             {

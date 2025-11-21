@@ -1,9 +1,12 @@
+using Infidex.Api;
+
 namespace Infidex.Core;
 
 /// <summary>
 /// Represents a document in the search engine.
 /// A document is the entity being searched for - can describe everything from a product 
 /// in an online store to a page in The Collected Works of Shakespeare.
+/// Documents contain multiple named fields with configurable weights and properties.
 /// </summary>
 public class Document
 {
@@ -28,10 +31,16 @@ public class Document
     public int SegmentNumber { get; set; }
     
     /// <summary>
-    /// The text to be searched and indexed.
-    /// This is the indexed text field.
+    /// Collection of named fields with values, weights, and properties.
+    /// This replaces the single IndexedText field for multi-field support.
     /// </summary>
-    public string IndexedText { get; set; }
+    public DocumentFields Fields { get; set; }
+    
+    /// <summary>
+    /// The concatenated indexed text from all searchable fields.
+    /// Generated during indexing from Fields. Read-only.
+    /// </summary>
+    public string IndexedText { get; internal set; } = string.Empty;
     
     /// <summary>
     /// Client annotation - free text field for user information.
@@ -39,7 +48,7 @@ public class Document
     /// This field is NOT indexed or searched.
     /// Examples: thumbnails, URIs, references, metadata, JSON data.
     /// </summary>
-    public string DocumentClientInformation { get; set; }
+    public string? DocumentClientInformation { get; set; }
     
     /// <summary>
     /// Reserved field for internal use (e.g., storing original text in first segment)
@@ -62,13 +71,46 @@ public class Document
     internal float VectorLength { get; set; }
     
     /// <summary>
-    /// Creates a document with indexed text only (simple constructor)
+    /// Creates a document with a single indexed text field (backward compatibility helper)
     /// </summary>
-    public Document(long documentKey, string indexedText)
+    public Document(long documentKey, string text)
     {
         DocumentKey = documentKey;
-        IndexedText = indexedText ?? string.Empty;
-        DocumentClientInformation = string.Empty;
+        SegmentNumber = 0;
+        Reserved = string.Empty;
+        JsonIndex = 0;
+        Deleted = false;
+        VectorLength = 0f;
+        
+        // Create single field with the text
+        Fields = new DocumentFields();
+        Fields.AddField("content", text);
+    }
+    
+    /// <summary>
+    /// Creates a segmented document with a single indexed text field
+    /// </summary>
+    public Document(long documentKey, int segmentNumber, string text)
+    {
+        DocumentKey = documentKey;
+        SegmentNumber = segmentNumber;
+        Reserved = string.Empty;
+        JsonIndex = 0;
+        Deleted = false;
+        VectorLength = 0f;
+        
+        // Create single field with the text
+        Fields = new DocumentFields();
+        Fields.AddField("content", text);
+    }
+    
+    /// <summary>
+    /// Creates a document with fields collection
+    /// </summary>
+    public Document(long documentKey, DocumentFields fields)
+    {
+        DocumentKey = documentKey;
+        Fields = fields;
         SegmentNumber = 0;
         Reserved = string.Empty;
         JsonIndex = 0;
@@ -77,18 +119,18 @@ public class Document
     }
     
     /// <summary>
-    /// Creates a document with full metadata (complete constructor)
+    /// Creates a document with full metadata
     /// </summary>
     public Document(
         long documentKey, 
         int segmentNumber, 
-        string indexedText, 
-        string documentClientInformation)
+        DocumentFields fields,
+        string? documentClientInformation = null)
     {
         DocumentKey = documentKey;
         SegmentNumber = segmentNumber;
-        IndexedText = indexedText ?? string.Empty;
-        DocumentClientInformation = documentClientInformation ?? string.Empty;
+        Fields = fields;
+        DocumentClientInformation = documentClientInformation;
         Reserved = string.Empty;
         JsonIndex = 0;
         Deleted = false;
@@ -96,13 +138,14 @@ public class Document
     }
     
     /// <summary>
-    /// Copy constructor - Document(Document document)
+    /// Copy constructor
     /// </summary>
-    public Document(Document source)
+    internal Document(Document source)
     {
         Id = source.Id;
         DocumentKey = source.DocumentKey;
         SegmentNumber = source.SegmentNumber;
+        Fields = source.Fields;
         IndexedText = source.IndexedText;
         DocumentClientInformation = source.DocumentClientInformation;
         Reserved = source.Reserved;
@@ -111,7 +154,17 @@ public class Document
         VectorLength = source.VectorLength;
     }
     
-    public override string ToString() => 
-        $"Doc {DocumentKey}:{SegmentNumber} - {IndexedText.Substring(0, Math.Min(50, IndexedText.Length))}...";
+    public override string ToString()
+    {
+        string preview = IndexedText;
+        if (string.IsNullOrEmpty(preview))
+        {
+            var firstField = Fields?.GetSearchAbleFieldList().FirstOrDefault();
+            preview = firstField?.Value?.ToString() ?? "(empty)";
+        }
+        
+        int previewLength = Math.Min(50, preview.Length);
+        return $"Doc {DocumentKey}:{SegmentNumber} - {preview.Substring(0, previewLength)}...";
+    }
 }
 
