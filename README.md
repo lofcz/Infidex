@@ -1,3 +1,5 @@
+[![FastDex](https://shields.io/nuget/v/Infidex?v=301)](https://www.nuget.org/packages/Infidex)
+
 # Infidex Search Engine
 
 A high-performance, hybrid search engine that combines TF-IDF vector space retrieval with multi-algorithm lexical matching.
