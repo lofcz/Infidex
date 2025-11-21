@@ -1,0 +1,26 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+    <PropertyGroup>
+        <TargetFrameworks>net8.0;net10.0</TargetFrameworks>
+        <ImplicitUsings>enable</ImplicitUsings>
+        <Nullable>enable</Nullable>
+        <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+        <LangVersion>preview</LangVersion>
+        <GeneratePackageOnBuild>true</GeneratePackageOnBuild>
+        <Title>Infidex</Title>
+        <Authors>Matěj "lofcz" Štágl</Authors>
+        <PackageProjectUrl>https://github.com/lofcz/Infidex</PackageProjectUrl>
+        <RepositoryUrl>https://github.com/lofcz/Infidex</RepositoryUrl>
+        <RepositoryType>git</RepositoryType>
+        <PackageTags>index,tfidf,inverted-index,fulltext,search</PackageTags>
+    </PropertyGroup>
+
+    <PropertyGroup Condition="$([MSBuild]::IsTargetFrameworkCompatible('$(TargetFramework)', 'netstandard2.1'))">
+        <DefineConstants>NETSTANDARD2_1_OR_GREATER</DefineConstants>
+    </PropertyGroup>
+
+    <ItemGroup>
+        <InternalsVisibleTo Include="$(AssemblyName).Tests" />
+    </ItemGroup>
+
+</Project>

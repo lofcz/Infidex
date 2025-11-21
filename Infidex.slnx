@@ -1,0 +1,5 @@
+<Solution>
+  <Project Path="Infidex.Example/Infidex.Example.csproj" />
+  <Project Path="Infidex.Tests/Infidex.Tests.csproj" />
+  <Project Path="Infidex/Infidex.csproj" />
+</Solution>

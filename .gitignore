@@ -1,0 +1,9 @@
+bin
+obj
+debug
+release
+.vs
+.vscode
+.code
+.idea
+Infidex.sln.DotSettings.user

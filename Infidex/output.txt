@@ -1,0 +1,223 @@
+C:\Users\lordo\Desktop\indx\Infidex\Infidex\Infidex\Filtering\FilterCache.cs(132,22): warning CS8600: Converting null literal or possible null value to non-nullable type. [C:\Users\lordo\Desktop\indx\Infidex\Infidex\Infidex\Infidex.csproj]
+C:\Users\lordo\Desktop\indx\Infidex\Infidex\Infidex\Filtering\FilterCache.cs(134,42): warning CS8604: Possible null reference argument for parameter 'key' in 'bool Dictionary<string, CompiledFilterOp>.TryGetValue(string key, out CompiledFilterOp value)'. [C:\Users\lordo\Desktop\indx\Infidex\Infidex\Infidex\Infidex.csproj]
+=== Infidex Search Engine - Basic Example ===
+
+Indexing documents...
+[TERM-NORM] docId=5, df=3, rawTf=1, tfIdf=1.522879, norm=12.123528, normalized=0.125613, quantized=32
+[TERM-NORM] docId=5, df=3, rawTf=1, tfIdf=1.522879, norm=12.123528, normalized=0.125613, quantized=32
+[TERM-NORM] docId=5, df=3, rawTf=1, tfIdf=1.522879, norm=12.123528, normalized=0.125613, quantized=32
+[TERM-NORM] docId=5, df=4, rawTf=1, tfIdf=1.397940, norm=12.123528, normalized=0.115308, quantized=29
+[TERM-NORM] docId=5, df=2, rawTf=1, tfIdf=1.698970, norm=12.123528, normalized=0.140138, quantized=36
+[TERM-NORM] docId=5, df=2, rawTf=1, tfIdf=1.698970, norm=12.123528, normalized=0.140138, quantized=36
+[TERM-NORM] docId=5, df=4, rawTf=1, tfIdf=1.397940, norm=12.123528, normalized=0.115308, quantized=29
+[TERM-NORM] docId=5, df=2, rawTf=2, tfIdf=2.000000, norm=12.123528, normalized=0.164968, quantized=42
+[TERM-NORM] docId=5, df=1, rawTf=1, tfIdf=2.000000, norm=12.123528, normalized=0.164968, quantized=42
+[TERM-NORM] docId=5, df=1, rawTf=1, tfIdf=2.000000, norm=12.123528, normalized=0.164968, quantized=42
+[TERM-NORM] docId=5, df=1, rawTf=1, tfIdf=2.000000, norm=12.123528, normalized=0.164968, quantized=42
+[TERM-NORM] docId=5, df=1, rawTf=1, tfIdf=2.000000, norm=12.123528, normalized=0.164968, quantized=42
+[TERM-NORM] docId=5, df=1, rawTf=1, tfIdf=2.000000, norm=12.123528, normalized=0.164968, quantized=42
+[TERM-NORM] docId=5, df=4, rawTf=1, tfIdf=1.397940, norm=12.123528, normalized=0.115308, quantized=29
+[TERM-NORM] docId=5, df=4, rawTf=1, tfIdf=1.397940, norm=12.123528, normalized=0.115308, quantized=29
+[TERM-NORM] docId=5, df=2, rawTf=1, tfIdf=1.698970, norm=12.123528, normalized=0.140138, quantized=36
+[TERM-NORM] docId=5, df=1, rawTf=1, tfIdf=2.000000, norm=12.123528, normalized=0.164968, quantized=42
+[TERM-NORM] docId=5, df=1, rawTf=1, tfIdf=2.000000, norm=12.123528, normalized=0.164968, quantized=42
+[TERM-NORM] docId=5, df=1, rawTf=1, tfIdf=2.000000, norm=12.123528, normalized=0.164968, quantized=42
+[TERM-NORM] docId=5, df=1, rawTf=1, tfIdf=2.000000, norm=12.123528, normalized=0.164968, quantized=42
+[TERM-NORM] docId=5, df=1, rawTf=1, tfIdf=2.000000, norm=12.123528, normalized=0.164968, quantized=42
+[TERM-NORM] docId=5, df=1, rawTf=1, tfIdf=2.000000, norm=12.123528, normalized=0.164968, quantized=42
+[TERM-NORM] docId=5, df=1, rawTf=1, tfIdf=2.000000, norm=12.123528, normalized=0.164968, quantized=42
+[TERM-NORM] docId=5, df=1, rawTf=1, tfIdf=2.000000, norm=12.123528, normalized=0.164968, quantized=42
+[TERM-NORM] docId=5, df=1, rawTf=1, tfIdf=2.000000, norm=12.123528, normalized=0.164968, quantized=42
+[TERM-NORM] docId=5, df=1, rawTf=1, tfIdf=2.000000, norm=12.123528, normalized=0.164968, quantized=42
+[TERM-NORM] docId=5, df=1, rawTf=1, tfIdf=2.000000, norm=12.123528, normalized=0.164968, quantized=42
+[TERM-NORM] docId=5, df=1, rawTf=1, tfIdf=2.000000, norm=12.123528, normalized=0.164968, quantized=42
+[TERM-NORM] docId=5, df=1, rawTf=1, tfIdf=2.000000, norm=12.123528, normalized=0.164968, quantized=42
+[TERM-NORM] docId=5, df=1, rawTf=1, tfIdf=2.000000, norm=12.123528, normalized=0.164968, quantized=42
+[TERM-NORM] docId=5, df=1, rawTf=1, tfIdf=2.000000, norm=12.123528, normalized=0.164968, quantized=42
+[TERM-NORM] docId=5, df=1, rawTf=1, tfIdf=2.000000, norm=12.123528, normalized=0.164968, quantized=42
+[TERM-NORM] docId=5, df=2, rawTf=1, tfIdf=1.698970, norm=12.123528, normalized=0.140138, quantized=36
+[TERM-NORM] docId=5, df=1, rawTf=1, tfIdf=2.000000, norm=12.123528, normalized=0.164968, quantized=42
+[TERM-NORM] docId=5, df=1, rawTf=1, tfIdf=2.000000, norm=12.123528, normalized=0.164968, quantized=42
+[TERM-NORM] docId=5, df=1, rawTf=1, tfIdf=2.000000, norm=12.123528, normalized=0.164968, quantized=42
+[TERM-NORM] docId=5, df=1, rawTf=1, tfIdf=2.000000, norm=12.123528, normalized=0.164968, quantized=42
+[TERM-NORM] docId=5, df=1, rawTf=1, tfIdf=2.000000, norm=12.123528, normalized=0.164968, quantized=42
+[TERM-NORM] docId=5, df=1, rawTf=1, tfIdf=2.000000, norm=12.123528, normalized=0.164968, quantized=42
+[TERM-NORM] docId=5, df=2, rawTf=1, tfIdf=1.698970, norm=12.123528, normalized=0.140138, quantized=36
+[TERM-NORM] docId=5, df=2, rawTf=1, tfIdf=1.698970, norm=12.123528, normalized=0.140138, quantized=36
+[TERM-NORM] docId=5, df=2, rawTf=1, tfIdf=1.698970, norm=12.123528, normalized=0.140138, quantized=36
+Indexed: 10 documents, 296 terms
+
+Search: "qick fux"
+[DEBUG] Search start: query="qick fux", normalized="qick fux", maxResults=5
+[DEBUG-VM] term="ick", docKey=1, internalId=0, docWeight=37, queryWeight=180, contribRounded=26, prevScore=0, newScore=26
+[DEBUG-VM] term="ick", docKey=5, internalId=4, docWeight=39, queryWeight=180, contribRounded=28, prevScore=0, newScore=28
+[DEBUG-VM] term="ck ", docKey=1, internalId=0, docWeight=37, queryWeight=180, contribRounded=26, prevScore=26, newScore=52
+[DEBUG-VM] term="ck ", docKey=5, internalId=4, docWeight=39, queryWeight=180, contribRounded=28, prevScore=28, newScore=56
+[DEBUG] Stage1 TF-IDF: 4 candidates
+  [DEBUG]   TF-IDF docKey=5, score=56
+  [DEBUG]   TF-IDF docKey=1, score=52
+  [DEBUG]   TF-IDF docKey=5, score=28
+  [DEBUG]   TF-IDF docKey=1, score=26
+[DEBUG] Stage2 Coverage: depth=500, top TF-IDF candidates:
+  [DEBUG]   top TF-IDF docKey=5, score=56
+  [DEBUG]   top TF-IDF docKey=1, score=52
+  [DEBUG]   top TF-IDF docKey=5, score=28
+  [DEBUG]   top TF-IDF docKey=1, score=26
+[DEBUG] Coverage (TF-IDF): docKey=5, relevancy=56, coverage=159, wordHits=2, lcsFromSpan=0, finalScore=159
+[DEBUG] Coverage (TF-IDF): docKey=1, relevancy=52, coverage=159, wordHits=2, lcsFromSpan=0, finalScore=159
+[DEBUG] Coverage (TF-IDF): docKey=5, relevancy=28, coverage=159, wordHits=2, lcsFromSpan=0, finalScore=159
+[DEBUG] Coverage (TF-IDF): docKey=1, relevancy=26, coverage=159, wordHits=2, lcsFromSpan=0, finalScore=159
+[DEBUG] Final fused results:
+  [DEBUG]   docKey=5, score=159
+  [DEBUG]   docKey=1, score=159
+  [159] Doc 5: The fox was quick and clever in the forest
+  [159] Doc 1: The quick brown fox jumps over the lazy dog
+
+Search: "batman"
+[DEBUG] Search start: query="batman", normalized="batman", maxResults=5
+[DEBUG-VM] term="bat", docKey=6, internalId=5, docWeight=42, queryWeight=137, contribRounded=23, prevScore=0, newScore=23
+[DEBUG-VM] term="atm", docKey=6, internalId=5, docWeight=42, queryWeight=137, contribRounded=23, prevScore=23, newScore=46
+[DEBUG-VM] term="tma", docKey=6, internalId=5, docWeight=42, queryWeight=137, contribRounded=23, prevScore=46, newScore=69
+[DEBUG-VM] term="man", docKey=6, internalId=5, docWeight=29, queryWeight=95, contribRounded=11, prevScore=69, newScore=80
+[DEBUG-VM] term="man", docKey=7, internalId=6, docWeight=30, queryWeight=95, contribRounded=11, prevScore=0, newScore=11
+[DEBUG-VM] term="man", docKey=8, internalId=7, docWeight=30, queryWeight=95, contribRounded=11, prevScore=0, newScore=11
+[DEBUG-VM] term="man", docKey=9, internalId=8, docWeight=33, queryWeight=95, contribRounded=12, prevScore=0, newScore=12
+[DEBUG] Stage1 TF-IDF: 7 candidates
+  [DEBUG]   TF-IDF docKey=6, score=80
+  [DEBUG]   TF-IDF docKey=6, score=69
+  [DEBUG]   TF-IDF docKey=6, score=46
+  [DEBUG]   TF-IDF docKey=6, score=23
+  [DEBUG]   TF-IDF docKey=9, score=12
+  [DEBUG]   TF-IDF docKey=7, score=11
+  [DEBUG]   TF-IDF docKey=8, score=11
+[DEBUG] Stage2 Coverage: depth=500, top TF-IDF candidates:
+  [DEBUG]   top TF-IDF docKey=6, score=80
+  [DEBUG]   top TF-IDF docKey=6, score=69
+  [DEBUG]   top TF-IDF docKey=6, score=46
+  [DEBUG]   top TF-IDF docKey=6, score=23
+  [DEBUG]   top TF-IDF docKey=9, score=12
+  [DEBUG]   top TF-IDF docKey=7, score=11
+  [DEBUG]   top TF-IDF docKey=8, score=11
+[DEBUG] WordMatcher hits (internal IDs): 5, 6, 7, 8
+[DEBUG] Coverage (WordMatcher): docKey=6, coverage=255, wordHits=1, lcsFromSpan=0, finalScore=255
+[DEBUG] Coverage (WordMatcher): docKey=7, coverage=0, wordHits=0, lcsFromSpan=0, finalScore=0
+[DEBUG] Coverage (WordMatcher): docKey=8, coverage=0, wordHits=0, lcsFromSpan=0, finalScore=0
+[DEBUG] Coverage (WordMatcher): docKey=9, coverage=0, wordHits=0, lcsFromSpan=0, finalScore=0
+[DEBUG] Coverage (TF-IDF): docKey=6, relevancy=80, coverage=255, wordHits=1, lcsFromSpan=0, finalScore=255
+[DEBUG] Coverage (TF-IDF): docKey=6, relevancy=69, coverage=255, wordHits=1, lcsFromSpan=0, finalScore=255
+[DEBUG] Coverage (TF-IDF): docKey=6, relevancy=46, coverage=255, wordHits=1, lcsFromSpan=0, finalScore=255
+[DEBUG] Coverage (TF-IDF): docKey=6, relevancy=23, coverage=255, wordHits=1, lcsFromSpan=0, finalScore=255
+[DEBUG] Coverage (TF-IDF): docKey=9, relevancy=12, coverage=0, wordHits=0, lcsFromSpan=0, finalScore=12
+[DEBUG] Coverage (TF-IDF): docKey=7, relevancy=11, coverage=0, wordHits=0, lcsFromSpan=0, finalScore=11
+[DEBUG] Coverage (TF-IDF): docKey=8, relevancy=11, coverage=0, wordHits=0, lcsFromSpan=0, finalScore=11
+[DEBUG] Final fused results:
+  [DEBUG]   docKey=6, score=255
+  [255] Doc 6: Batman and Robin fight crime in Gotham City
+
+Search: "battamam"
+[DEBUG] Search start: query="battamam", normalized="battamam", maxResults=5
+[DEBUG-VM] term="bat", docKey=6, internalId=5, docWeight=42, queryWeight=255, contribRounded=42, prevScore=0, newScore=42
+[DEBUG] Stage1 TF-IDF: 1 candidates
+  [DEBUG]   TF-IDF docKey=6, score=42
+[DEBUG] Stage2 Coverage: depth=500, top TF-IDF candidates:
+  [DEBUG]   top TF-IDF docKey=6, score=42
+[DEBUG] WordMatcher hits (internal IDs): 5
+[DEBUG] Coverage (WordMatcher): docKey=6, coverage=0, wordHits=0, lcsFromSpan=0, finalScore=0
+[DEBUG] Coverage (TF-IDF): docKey=6, relevancy=42, coverage=0, wordHits=0, lcsFromSpan=0, finalScore=42
+[DEBUG] Final fused results:
+  [DEBUG]   docKey=6, score=42
+  [042] Doc 6: Batman and Robin fight crime in Gotham City
+
+Search: "new york"
+[DEBUG] Search start: query="new york", normalized="new york", maxResults=5
+[DEBUG-VM] term="new", docKey=8, internalId=7, docWeight=43, queryWeight=117, contribRounded=20, prevScore=0, newScore=20
+[DEBUG-VM] term="ew ", docKey=8, internalId=7, docWeight=43, queryWeight=101, contribRounded=17, prevScore=20, newScore=37
+[DEBUG-VM] term="w y", docKey=8, internalId=7, docWeight=43, queryWeight=101, contribRounded=17, prevScore=37, newScore=54
+[DEBUG-VM] term=" yo", docKey=8, internalId=7, docWeight=43, queryWeight=101, contribRounded=17, prevScore=54, newScore=71
+[DEBUG-VM] term="yor", docKey=8, internalId=7, docWeight=43, queryWeight=101, contribRounded=17, prevScore=71, newScore=88
+[DEBUG-VM] term="ork", docKey=8, internalId=7, docWeight=43, queryWeight=101, contribRounded=17, prevScore=88, newScore=105
+[DEBUG] Stage1 TF-IDF: 6 candidates
+  [DEBUG]   TF-IDF docKey=8, score=105
+  [DEBUG]   TF-IDF docKey=8, score=88
+  [DEBUG]   TF-IDF docKey=8, score=71
+  [DEBUG]   TF-IDF docKey=8, score=54
+  [DEBUG]   TF-IDF docKey=8, score=37
+  [DEBUG]   TF-IDF docKey=8, score=20
+[DEBUG] Stage2 Coverage: depth=500, top TF-IDF candidates:
+  [DEBUG]   top TF-IDF docKey=8, score=105
+  [DEBUG]   top TF-IDF docKey=8, score=88
+  [DEBUG]   top TF-IDF docKey=8, score=71
+  [DEBUG]   top TF-IDF docKey=8, score=54
+  [DEBUG]   top TF-IDF docKey=8, score=37
+  [DEBUG]   top TF-IDF docKey=8, score=20
+[DEBUG] WordMatcher hits (internal IDs): 7
+[DEBUG] Coverage (WordMatcher): docKey=8, coverage=253, wordHits=2, lcsFromSpan=0, finalScore=253
+[DEBUG] Coverage (TF-IDF): docKey=8, relevancy=105, coverage=253, wordHits=2, lcsFromSpan=0, finalScore=253
+[DEBUG] Coverage (TF-IDF): docKey=8, relevancy=88, coverage=253, wordHits=2, lcsFromSpan=0, finalScore=253
+[DEBUG] Coverage (TF-IDF): docKey=8, relevancy=71, coverage=253, wordHits=2, lcsFromSpan=0, finalScore=253
+[DEBUG] Coverage (TF-IDF): docKey=8, relevancy=54, coverage=253, wordHits=2, lcsFromSpan=0, finalScore=253
+[DEBUG] Coverage (TF-IDF): docKey=8, relevancy=37, coverage=253, wordHits=2, lcsFromSpan=0, finalScore=253
+[DEBUG] Coverage (TF-IDF): docKey=8, relevancy=20, coverage=253, wordHits=2, lcsFromSpan=0, finalScore=253
+[DEBUG] Final fused results:
+  [DEBUG]   docKey=8, score=253
+  [253] Doc 8: Spider-Man swings through New York City
+
+Search: "speeding"
+[DEBUG] Search start: query="speeding", normalized="speeding", maxResults=5
+[DEBUG-VM] term="spe", docKey=7, internalId=6, docWeight=36, queryWeight=102, contribRounded=14, prevScore=0, newScore=14
+[DEBUG-VM] term="spe", docKey=10, internalId=9, docWeight=40, queryWeight=102, contribRounded=16, prevScore=0, newScore=16
+[DEBUG-VM] term="pee", docKey=7, internalId=6, docWeight=36, queryWeight=102, contribRounded=14, prevScore=14, newScore=28
+[DEBUG-VM] term="pee", docKey=10, internalId=9, docWeight=40, queryWeight=102, contribRounded=16, prevScore=16, newScore=32
+[DEBUG-VM] term="eed", docKey=7, internalId=6, docWeight=36, queryWeight=102, contribRounded=14, prevScore=28, newScore=42
+[DEBUG-VM] term="eed", docKey=10, internalId=9, docWeight=40, queryWeight=102, contribRounded=16, prevScore=32, newScore=48
+[DEBUG-VM] term="edi", docKey=7, internalId=6, docWeight=36, queryWeight=102, contribRounded=14, prevScore=42, newScore=56
+[DEBUG-VM] term="edi", docKey=10, internalId=9, docWeight=40, queryWeight=102, contribRounded=16, prevScore=48, newScore=64
+[DEBUG-VM] term="din", docKey=7, internalId=6, docWeight=43, queryWeight=121, contribRounded=20, prevScore=56, newScore=76
+[DEBUG-VM] term="ing", docKey=2, internalId=1, docWeight=28, queryWeight=92, contribRounded=10, prevScore=0, newScore=10
+[DEBUG-VM] term="ing", docKey=7, internalId=6, docWeight=32, queryWeight=92, contribRounded=12, prevScore=76, newScore=88
+[DEBUG-VM] term="ing", docKey=8, internalId=7, docWeight=33, queryWeight=92, contribRounded=12, prevScore=0, newScore=12
+[DEBUG] Stage1 TF-IDF: 12 candidates
+  [DEBUG]   TF-IDF docKey=7, score=88
+  [DEBUG]   TF-IDF docKey=7, score=76
+  [DEBUG]   TF-IDF docKey=10, score=64
+  [DEBUG]   TF-IDF docKey=7, score=56
+  [DEBUG]   TF-IDF docKey=10, score=48
+  [DEBUG]   TF-IDF docKey=7, score=42
+  [DEBUG]   TF-IDF docKey=10, score=32
+  [DEBUG]   TF-IDF docKey=7, score=28
+  [DEBUG]   TF-IDF docKey=10, score=16
+  [DEBUG]   TF-IDF docKey=7, score=14
+  [DEBUG]   TF-IDF docKey=8, score=12
+  [DEBUG]   TF-IDF docKey=2, score=10
+[DEBUG] Stage2 Coverage: depth=500, top TF-IDF candidates:
+  [DEBUG]   top TF-IDF docKey=7, score=88
+  [DEBUG]   top TF-IDF docKey=7, score=76
+  [DEBUG]   top TF-IDF docKey=10, score=64
+  [DEBUG]   top TF-IDF docKey=7, score=56
+  [DEBUG]   top TF-IDF docKey=10, score=48
+  [DEBUG]   top TF-IDF docKey=7, score=42
+  [DEBUG]   top TF-IDF docKey=10, score=32
+  [DEBUG]   top TF-IDF docKey=7, score=28
+  [DEBUG]   top TF-IDF docKey=10, score=16
+  [DEBUG]   top TF-IDF docKey=7, score=14
+  [DEBUG]   top TF-IDF docKey=8, score=12
+  [DEBUG]   top TF-IDF docKey=2, score=10
+[DEBUG] WordMatcher hits (internal IDs): 6, 9
+[DEBUG] Coverage (WordMatcher): docKey=7, coverage=254, wordHits=1, lcsFromSpan=0, finalScore=254
+[DEBUG] Coverage (WordMatcher): docKey=10, coverage=0, wordHits=0, lcsFromSpan=0, finalScore=0
+[DEBUG] Coverage (TF-IDF): docKey=7, relevancy=88, coverage=254, wordHits=1, lcsFromSpan=0, finalScore=254
+[DEBUG] Coverage (TF-IDF): docKey=7, relevancy=76, coverage=254, wordHits=1, lcsFromSpan=0, finalScore=254
+[DEBUG] Coverage (TF-IDF): docKey=10, relevancy=64, coverage=0, wordHits=0, lcsFromSpan=0, finalScore=64
+[DEBUG] Coverage (TF-IDF): docKey=7, relevancy=56, coverage=254, wordHits=1, lcsFromSpan=0, finalScore=254
+[DEBUG] Coverage (TF-IDF): docKey=10, relevancy=48, coverage=0, wordHits=0, lcsFromSpan=0, finalScore=48
+[DEBUG] Coverage (TF-IDF): docKey=7, relevancy=42, coverage=254, wordHits=1, lcsFromSpan=0, finalScore=254
+[DEBUG] Coverage (TF-IDF): docKey=10, relevancy=32, coverage=0, wordHits=0, lcsFromSpan=0, finalScore=32
+[DEBUG] Coverage (TF-IDF): docKey=7, relevancy=28, coverage=254, wordHits=1, lcsFromSpan=0, finalScore=254
+[DEBUG] Coverage (TF-IDF): docKey=10, relevancy=16, coverage=0, wordHits=0, lcsFromSpan=0, finalScore=16
+[DEBUG] Coverage (TF-IDF): docKey=7, relevancy=14, coverage=254, wordHits=1, lcsFromSpan=0, finalScore=254
+[DEBUG] Coverage (TF-IDF): docKey=8, relevancy=12, coverage=0, wordHits=0, lcsFromSpan=0, finalScore=12
+[DEBUG] Coverage (TF-IDF): docKey=2, relevancy=10, coverage=0, wordHits=0, lcsFromSpan=0, finalScore=10
+[DEBUG] Final fused results:
+  [DEBUG]   docKey=7, score=254
+  [254] Doc 7: Superman flies faster than a speeding bullet
+

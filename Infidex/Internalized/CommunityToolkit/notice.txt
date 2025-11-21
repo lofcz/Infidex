@@ -1,0 +1,2 @@
+files in this folder were adapted from https://github.com/CommunityToolkit/dotnet/blob/main/src/CommunityToolkit.HighPerformance
+licensed under the MIT license: https://github.com/CommunityToolkit/dotnet/blob/main/License.md
