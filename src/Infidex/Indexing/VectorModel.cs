@@ -1,3 +1,4 @@
+using Infidex.Api;
 using Infidex.Core;
 using Infidex.Tokenization;
 using Infidex.Utilities;
@@ -264,7 +265,7 @@ public class VectorModel
 
                     // Multiply byte weights and scale back (matching original VectorModel behavior)
                     float scoreContribution = (docWeight * queryWeight) / 255f;
-                    float currentScore = (float)(int)documentScores[internalId];
+                    float currentScore = documentScores[internalId];
                     float contribRounded = MathF.Round(scoreContribution);
                     byte newScore = (byte)MathF.Min(contribRounded + currentScore, 255f);
                     
@@ -457,7 +458,7 @@ public class VectorModel
             int jsonIdx = reader.ReadInt32();
             
             // Create fields from loaded text (backward compatibility with old format)
-            var fields = new Api.DocumentFields();
+            DocumentFields fields = new Api.DocumentFields();
             fields.AddField("content", text, Api.Weight.Med, indexable: true);
             
             Document doc = new Document(key, seg, fields, info) { JsonIndex = jsonIdx };

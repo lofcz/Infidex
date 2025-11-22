@@ -6,6 +6,9 @@ class Program
 {
     static void Main(string[] args)
     {
-        BenchmarkSwitcher.FromAssembly(typeof(Program).Assembly).Run(args);
+        ResultComparison.Run();
+        return;
+        
+        //BenchmarkSwitcher.FromAssembly(typeof(Program).Assembly).Run(args);
     }
 }

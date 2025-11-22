@@ -1,5 +1,3 @@
-using System.ComponentModel;
-
 namespace Infidex.Coverage;
 
 /// <summary>

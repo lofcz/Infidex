@@ -22,7 +22,7 @@ public static class FacetBuilder
         DocumentFields? fieldSchema,
         int maxFacetsPerField = 100)
     {
-        var facets = new Dictionary<string, KeyValuePair<string, int>[]>();
+        Dictionary<string, KeyValuePair<string, int>[]> facets = new Dictionary<string, KeyValuePair<string, int>[]>();
         
         if (fieldSchema == null || results.Length == 0)
             return facets;
@@ -34,14 +34,14 @@ public static class FacetBuilder
             return facets;
         
         // Build facets for each facetable field
-        foreach (var field in facetableFields)
+        foreach (Field field in facetableFields)
         {
-            var valueCounts = BuildFacetForField(field.Name, results, documents);
+            Dictionary<string, int> valueCounts = BuildFacetForField(field.Name, results, documents);
             
             if (valueCounts.Count > 0)
             {
                 // Sort by count descending, then by value ascending
-                var sortedFacets = valueCounts
+                KeyValuePair<string, int>[] sortedFacets = valueCounts
                     .OrderByDescending(kvp => kvp.Value)
                     .ThenBy(kvp => kvp.Key)
                     .Take(maxFacetsPerField)
@@ -63,18 +63,18 @@ public static class FacetBuilder
         ScoreEntry[] results,
         DocumentCollection documents)
     {
-        var valueCounts = new Dictionary<string, int>();
+        Dictionary<string, int> valueCounts = new Dictionary<string, int>();
         
         // Count occurrences of each value in the result set
-        foreach (var result in results)
+        foreach (ScoreEntry result in results)
         {
             // Get the document (DocumentId in ScoreEntry is the public DocumentKey)
-            var doc = documents.GetDocumentByPublicKey(result.DocumentId);
+            Document? doc = documents.GetDocumentByPublicKey(result.DocumentId);
             if (doc == null)
                 continue;
             
             // Get the field value
-            var field = doc.Fields.GetField(fieldName);
+            Field? field = doc.Fields.GetField(fieldName);
             if (field == null || field.Value == null)
                 continue;
             
@@ -112,7 +112,7 @@ public static class FacetBuilder
         DocumentFields? fieldSchema,
         int maxFacetsPerField = 100)
     {
-        var facets = new Dictionary<string, KeyValuePair<string, int>[]>();
+        Dictionary<string, KeyValuePair<string, int>[]> facets = new Dictionary<string, KeyValuePair<string, int>[]>();
         
         if (fieldSchema == null || documents.Count == 0)
             return facets;
@@ -124,18 +124,18 @@ public static class FacetBuilder
             return facets;
         
         // Build facets for each facetable field from all documents
-        foreach (var field in facetableFields)
+        foreach (Field field in facetableFields)
         {
-            var valueCounts = new Dictionary<string, int>();
+            Dictionary<string, int> valueCounts = new Dictionary<string, int>();
             
             // Iterate through all documents
             for (int i = 0; i < documents.Count; i++)
             {
-                var doc = documents.GetDocument(i);
+                Document? doc = documents.GetDocument(i);
                 if (doc == null || doc.Deleted)
                     continue;
                 
-                var docField = doc.Fields.GetField(field.Name);
+                Field? docField = doc.Fields.GetField(field.Name);
                 if (docField == null || docField.Value == null)
                     continue;
                 
@@ -165,7 +165,7 @@ public static class FacetBuilder
             if (valueCounts.Count > 0)
             {
                 // Sort by count descending, then by value ascending
-                var sortedFacets = valueCounts
+                KeyValuePair<string, int>[] sortedFacets = valueCounts
                     .OrderByDescending(kvp => kvp.Value)
                     .ThenBy(kvp => kvp.Key)
                     .Take(maxFacetsPerField)

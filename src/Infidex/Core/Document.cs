@@ -159,7 +159,7 @@ public class Document
         string preview = IndexedText;
         if (string.IsNullOrEmpty(preview))
         {
-            var firstField = Fields?.GetSearchAbleFieldList().FirstOrDefault();
+            Field? firstField = Fields?.GetSearchAbleFieldList().FirstOrDefault();
             preview = firstField?.Value?.ToString() ?? "(empty)";
         }
         

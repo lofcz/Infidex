@@ -89,7 +89,7 @@ public class Query
                 return 0;
             
             int total = 0;
-            foreach (var boost in Boosts)
+            foreach (Boost boost in Boosts)
             {
                 total += (int)boost.BoostStrength;
             }
@@ -108,7 +108,7 @@ public class Query
                 return 0;
             
             int total = 0;
-            foreach (var boost in Boosts)
+            foreach (Boost boost in Boosts)
             {
                 total += boost.DocumentsBoosted;
             }

@@ -21,14 +21,8 @@ public class Boost
     /// <summary>
     /// Number of documents that will receive this boost
     /// </summary>
-    public int DocumentsBoosted
-    {
-        get
-        {
-            return Filter?.NumberOfDocumentsInFilter ?? 0;
-        }
-    }
-    
+    public int DocumentsBoosted => Filter?.NumberOfDocumentsInFilter ?? 0;
+
     /// <summary>
     /// Creates a new boost configuration
     /// </summary>

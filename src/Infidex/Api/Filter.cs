@@ -30,7 +30,7 @@ public abstract class Filter
     /// <returns>A compiled filter ready for execution by the FilterVM</returns>
     public CompiledFilter Compile()
     {
-        var compiler = new FilterCompiler();
+        FilterCompiler compiler = new FilterCompiler();
         return compiler.Compile(this);
     }
     
@@ -41,9 +41,9 @@ public abstract class Filter
     /// <returns>Bytecode representation of the compiled filter</returns>
     public byte[] CompileToBytes()
     {
-        var compiled = Compile();
-        var serializer = new BytecodeSerializer();
-        return serializer.Serialize(compiled);
+        CompiledFilter compiled = Compile();
+        BytecodeSerializer serializer = new BytecodeSerializer();
+        return BytecodeSerializer.Serialize(compiled);
     }
     
     /// <summary>
@@ -53,8 +53,8 @@ public abstract class Filter
     /// <returns>A compiled filter ready for execution</returns>
     public static CompiledFilter FromBytecode(byte[] bytecode)
     {
-        var serializer = new BytecodeSerializer();
-        return serializer.Deserialize(bytecode);
+        BytecodeSerializer serializer = new BytecodeSerializer();
+        return BytecodeSerializer.Deserialize(bytecode);
     }
     
     /// <summary>

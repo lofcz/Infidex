@@ -1,3 +1,5 @@
+using System.Text;
+
 namespace Infidex.Api;
 
 /// <summary>
@@ -31,7 +33,7 @@ public class FilterParseException : ArgumentException
     
     private static string FormatMessage(string message, string expression, int position, string? suggestion)
     {
-        var sb = new System.Text.StringBuilder();
+        StringBuilder sb = new System.Text.StringBuilder();
         sb.AppendLine(message);
         sb.AppendLine();
         

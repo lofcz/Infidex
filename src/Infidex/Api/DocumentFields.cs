@@ -36,7 +36,7 @@ public class DocumentFields
     /// </summary>
     public void AddField(string name, object? value, Weight weight = Weight.Med, bool indexable = true)
     {
-        var field = new Field(name, value, weight)
+        Field field = new Field(name, value, weight)
         {
             Indexable = indexable
         };
@@ -48,7 +48,7 @@ public class DocumentFields
     /// </summary>
     public Field? GetField(string name)
     {
-        return _fields.TryGetValue(name, out var field) ? field : null;
+        return _fields.GetValueOrDefault(name);
     }
     
     /// <summary>
@@ -123,14 +123,14 @@ public class DocumentFields
     /// <returns>Array of (position, weight) tuples marking where each field starts</returns>
     public (ushort Position, byte Weight)[] GetSearchableTexts(char delimiter, out string concatenatedText)
     {
-        var fieldBoundaries = new List<(ushort Position, byte Weight)>();
-        var builder = new StringBuilder(100);
+        List<(ushort Position, byte Weight)> fieldBoundaries = [];
+        StringBuilder builder = new StringBuilder(100);
         
         List<Field> searchableFields = GetSearchAbleFieldList();
         
         for (int i = 0; i < searchableFields.Count; i++)
         {
-            var field = searchableFields[i];
+            Field field = searchableFields[i];
             
             if (field.IsArray && field.Value is List<object> arrayValues)
             {
@@ -177,7 +177,7 @@ public class DocumentFields
         if (string.IsNullOrEmpty(NameOfDocumentKeyField))
             return false;
         
-        var keyField = GetField(NameOfDocumentKeyField);
+        Field? keyField = GetField(NameOfDocumentKeyField);
         if (keyField == null)
             return false;
         

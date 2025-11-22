@@ -7,8 +7,7 @@ namespace Infidex.Core;
 public class ScoreArray
 {
     private readonly List<long>[] _buckets;
-    private int _totalCount;
-    
+
     public ScoreArray()
     {
         // Create 256 buckets (one for each possible byte value)
@@ -17,7 +16,7 @@ public class ScoreArray
         {
             _buckets[i] = [];
         }
-        _totalCount = 0;
+        Count = 0;
     }
     
     /// <summary>
@@ -26,7 +25,7 @@ public class ScoreArray
     public void Add(long documentId, byte score)
     {
         _buckets[score].Add(documentId);
-        _totalCount++;
+        Count++;
     }
     
     /// <summary>
@@ -65,7 +64,7 @@ public class ScoreArray
     /// </summary>
     public ScoreEntry[] GetAll()
     {
-        return GetTopK(_totalCount);
+        return GetTopK(Count);
     }
     
     /// <summary>
@@ -77,13 +76,13 @@ public class ScoreArray
         {
             _buckets[i].Clear();
         }
-        _totalCount = 0;
+        Count = 0;
     }
     
     /// <summary>
     /// Gets the total number of entries
     /// </summary>
-    public int Count => _totalCount;
+    public int Count { get; private set; }
 }
 
 

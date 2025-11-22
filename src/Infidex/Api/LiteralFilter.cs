@@ -26,17 +26,14 @@ public class LiteralFilter : Filter
     /// </summary>
     public override bool Matches(object? fieldValue)
     {
-        // Convert literal to boolean for filter contexts
-        if (Value is bool boolValue)
-            return boolValue;
-        
-        if (Value is string strValue)
-            return !string.IsNullOrEmpty(strValue);
-        
-        if (Value is int || Value is long || Value is double || Value is decimal)
-            return Convert.ToDouble(Value) != 0;
-        
-        return Value != null;
+        return Value switch
+        {
+            // Convert literal to boolean for filter contexts
+            bool boolValue => boolValue,
+            string strValue => !string.IsNullOrEmpty(strValue),
+            int or long or double or decimal => Convert.ToDouble(Value) != 0,
+            _ => Value != null
+        };
     }
     
     /// <summary>

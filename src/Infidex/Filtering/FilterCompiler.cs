@@ -1,3 +1,4 @@
+using System.Text;
 using Infidex.Api;
 
 namespace Infidex.Filtering;
@@ -13,7 +14,7 @@ public class FilterCompiler
     public FilterCompiler()
     {
         _constantPool = new ConstantPool();
-        _instructions = new List<Instruction>();
+        _instructions = [];
     }
     
     /// <summary>
@@ -22,7 +23,7 @@ public class FilterCompiler
     public CompiledFilter Compile(Filter filter)
     {
         _constantPool = new ConstantPool();
-        _instructions = new List<Instruction>();
+        _instructions = [];
         
         CompileFilter(filter);
         
@@ -296,11 +297,11 @@ public class CompiledFilter
     /// </summary>
     public string Disassemble()
     {
-        var sb = new System.Text.StringBuilder();
+        StringBuilder sb = new System.Text.StringBuilder();
         sb.AppendLine("=== Constant Pool ===");
         for (int i = 0; i < Constants.Count; i++)
         {
-            var constant = Constants.Get(i);
+            object constant = Constants.Get(i);
             if (constant is object[] arr)
             {
                 sb.AppendLine($"  [{i}] Array: [{string.Join(", ", arr)}]");

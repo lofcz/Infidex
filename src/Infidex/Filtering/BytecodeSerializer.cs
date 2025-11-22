@@ -13,10 +13,10 @@ public class BytecodeSerializer
     /// <summary>
     /// Serialize compiled filter to binary format
     /// </summary>
-    public byte[] Serialize(CompiledFilter filter)
+    public static byte[] Serialize(CompiledFilter filter)
     {
-        using var ms = new MemoryStream();
-        using var writer = new BinaryWriter(ms, Encoding.UTF8);
+        using MemoryStream ms = new MemoryStream();
+        using BinaryWriter writer = new BinaryWriter(ms, Encoding.UTF8);
         
         // Write magic header
         writer.Write(Encoding.ASCII.GetBytes(MAGIC_HEADER));
@@ -31,7 +31,7 @@ public class BytecodeSerializer
         
         // Serialize instructions
         writer.Write(filter.Instructions.Length);
-        foreach (var instruction in filter.Instructions)
+        foreach (Instruction instruction in filter.Instructions)
         {
             writer.Write((byte)instruction.Opcode);
             
@@ -54,10 +54,10 @@ public class BytecodeSerializer
     /// <summary>
     /// Deserialize binary format to compiled filter
     /// </summary>
-    public CompiledFilter Deserialize(byte[] data)
+    public static CompiledFilter Deserialize(byte[] data)
     {
-        using var ms = new MemoryStream(data);
-        using var reader = new BinaryReader(ms, Encoding.UTF8);
+        using MemoryStream ms = new MemoryStream(data);
+        using BinaryReader reader = new BinaryReader(ms, Encoding.UTF8);
         
         // Read and validate magic header
         byte[] magicBytes = reader.ReadBytes(MAGIC_HEADER.Length);
@@ -77,15 +77,15 @@ public class BytecodeSerializer
         // Deserialize constant pool
         int constantPoolSize = reader.ReadInt32();
         byte[] constantPoolData = reader.ReadBytes(constantPoolSize);
-        var constantPool = ConstantPool.Deserialize(constantPoolData);
+        ConstantPool constantPool = ConstantPool.Deserialize(constantPoolData);
         
         // Deserialize instructions
         int instructionCount = reader.ReadInt32();
-        var instructions = new Instruction[instructionCount];
+        Instruction[] instructions = new Instruction[instructionCount];
         
         for (int i = 0; i < instructionCount; i++)
         {
-            var opcode = (Opcode)reader.ReadByte();
+            Opcode opcode = (Opcode)reader.ReadByte();
             int operand1 = 0;
             int operand2 = 0;
             
@@ -119,7 +119,7 @@ public class BytecodeSerializer
     /// <summary>
     /// Save compiled filter to file
     /// </summary>
-    public void SaveToFile(CompiledFilter filter, string path)
+    public static void SaveToFile(CompiledFilter filter, string path)
     {
         byte[] data = Serialize(filter);
         File.WriteAllBytes(path, data);
@@ -128,7 +128,7 @@ public class BytecodeSerializer
     /// <summary>
     /// Load compiled filter from file
     /// </summary>
-    public CompiledFilter LoadFromFile(string path)
+    public static CompiledFilter LoadFromFile(string path)
     {
         byte[] data = File.ReadAllBytes(path);
         return Deserialize(data);
@@ -154,8 +154,8 @@ public class BytecodeSerializer
         if (data.Length < MAGIC_HEADER.Length + 2)
             throw new InvalidDataException("Data too short to contain version");
         
-        using var ms = new MemoryStream(data);
-        using var reader = new BinaryReader(ms);
+        using MemoryStream ms = new MemoryStream(data);
+        using BinaryReader reader = new BinaryReader(ms);
         
         reader.ReadBytes(MAGIC_HEADER.Length); // Skip magic header
         return reader.ReadUInt16();

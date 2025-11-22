@@ -43,14 +43,7 @@ internal class FilterBuilder
     /// </summary>
     public FilterBuilder And(Filter filter)
     {
-        if (_currentFilter == null)
-        {
-            _currentFilter = filter;
-        }
-        else
-        {
-            _currentFilter = CompositeFilter.And(_currentFilter, filter);
-        }
+        _currentFilter = _currentFilter == null ? filter : CompositeFilter.And(_currentFilter, filter);
         return this;
     }
     
@@ -75,14 +68,7 @@ internal class FilterBuilder
     /// </summary>
     public FilterBuilder Or(Filter filter)
     {
-        if (_currentFilter == null)
-        {
-            _currentFilter = filter;
-        }
-        else
-        {
-            _currentFilter = CompositeFilter.Or(_currentFilter, filter);
-        }
+        _currentFilter = _currentFilter == null ? filter : CompositeFilter.Or(_currentFilter, filter);
         return this;
     }
     
@@ -120,13 +106,9 @@ internal class FilterBuilder
     /// </summary>
     public FilterBuilder And(Func<FilterBuilder, FilterBuilder> subExpression)
     {
-        var subBuilder = subExpression(new FilterBuilder());
-        var subFilter = subBuilder.Build();
-        if (subFilter != null)
-        {
-            return And(subFilter);
-        }
-        return this;
+        FilterBuilder subBuilder = subExpression(new FilterBuilder());
+        Filter? subFilter = subBuilder.Build();
+        return subFilter != null ? And(subFilter) : this;
     }
     
     /// <summary>
@@ -135,13 +117,9 @@ internal class FilterBuilder
     /// </summary>
     public FilterBuilder Or(Func<FilterBuilder, FilterBuilder> subExpression)
     {
-        var subBuilder = subExpression(new FilterBuilder());
-        var subFilter = subBuilder.Build();
-        if (subFilter != null)
-        {
-            return Or(subFilter);
-        }
-        return this;
+        FilterBuilder subBuilder = subExpression(new FilterBuilder());
+        Filter? subFilter = subBuilder.Build();
+        return subFilter != null ? Or(subFilter) : this;
     }
     
     /// <summary>

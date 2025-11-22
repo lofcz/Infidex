@@ -15,7 +15,7 @@ public class ConstantPool
     
     public ConstantPool()
     {
-        _constants = new List<object>();
+        _constants = [];
         _constantIndex = new Dictionary<object, int>();
     }
     
@@ -74,8 +74,8 @@ public class ConstantPool
     /// </summary>
     public byte[] Serialize()
     {
-        using var ms = new MemoryStream();
-        using var writer = new BinaryWriter(ms, Encoding.UTF8);
+        using MemoryStream ms = new MemoryStream();
+        using BinaryWriter writer = new BinaryWriter(ms, Encoding.UTF8);
         
         // Write constant count
         writer.Write(_constants.Count);
@@ -117,16 +117,16 @@ public class ConstantPool
     /// </summary>
     public static ConstantPool Deserialize(byte[] data)
     {
-        var pool = new ConstantPool();
+        ConstantPool pool = new ConstantPool();
         
-        using var ms = new MemoryStream(data);
-        using var reader = new BinaryReader(ms, Encoding.UTF8);
+        using MemoryStream ms = new MemoryStream(data);
+        using BinaryReader reader = new BinaryReader(ms, Encoding.UTF8);
         
         int count = reader.ReadInt32();
         
         for (int i = 0; i < count; i++)
         {
-            var type = (ConstantType)reader.ReadByte();
+            ConstantType type = (ConstantType)reader.ReadByte();
             
             switch (type)
             {
@@ -144,7 +144,7 @@ public class ConstantPool
                     
                 case ConstantType.Array:
                     int arrayLength = reader.ReadInt32();
-                    var array = new object[arrayLength];
+                    object[] array = new object[arrayLength];
                     for (int j = 0; j < arrayLength; j++)
                     {
                         array[j] = reader.ReadString();

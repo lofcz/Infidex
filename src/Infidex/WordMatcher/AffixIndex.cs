@@ -6,7 +6,7 @@ namespace Infidex.WordMatcher;
 /// Index for prefix and suffix matching.
 /// Enables fast lookup of documents containing words with specific prefixes/suffixes.
 /// </summary>
-public class AffixIndex : IDisposable
+public sealed class AffixIndex : IDisposable
 {
     private readonly Dictionary<string, HashSet<int>> _affixIndex;
     private readonly char[] _delimiters;
@@ -129,8 +129,8 @@ public class AffixIndex : IDisposable
         Dispose(true);
         GC.SuppressFinalize(this);
     }
-    
-    protected virtual void Dispose(bool disposing)
+
+    private void Dispose(bool disposing)
     {
         if (_disposed) return;
         

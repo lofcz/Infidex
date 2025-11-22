@@ -440,7 +440,7 @@ public class BytecodeVMTests
         var filter = new ValueFilter("genre", "Fantasy");
         var compiled = _compiler.Compile(filter);
 
-        byte[] bytecode = _serializer.Serialize(compiled);
+        byte[] bytecode = BytecodeSerializer.Serialize(compiled);
 
         Assert.IsNotNull(bytecode);
         Assert.IsTrue(bytecode.Length > 0);
@@ -453,7 +453,7 @@ public class BytecodeVMTests
         var filter = new ValueFilter("genre", "Fantasy");
         var compiled = _compiler.Compile(filter);
 
-        byte[] bytecode = _serializer.Serialize(compiled);
+        byte[] bytecode = BytecodeSerializer.Serialize(compiled);
 
         string magic = System.Text.Encoding.ASCII.GetString(bytecode, 0, 13);
         Assert.AreEqual("INFISCRIPT-V1", magic);
@@ -465,8 +465,8 @@ public class BytecodeVMTests
         var filter = new ValueFilter("genre", "Fantasy");
         var compiled = _compiler.Compile(filter);
 
-        byte[] bytecode = _serializer.Serialize(compiled);
-        var deserialized = _serializer.Deserialize(bytecode);
+        byte[] bytecode = BytecodeSerializer.Serialize(compiled);
+        var deserialized = BytecodeSerializer.Deserialize(bytecode);
 
         Assert.IsNotNull(deserialized);
         Assert.AreEqual(compiled.Instructions.Length, deserialized.Instructions.Length);
@@ -483,10 +483,10 @@ public class BytecodeVMTests
         var compiled = _compiler.Compile(filter);
 
         // Serialize
-        byte[] bytecode = _serializer.Serialize(compiled);
+        byte[] bytecode = BytecodeSerializer.Serialize(compiled);
 
         // Deserialize
-        var deserialized = _serializer.Deserialize(bytecode);
+        var deserialized = BytecodeSerializer.Deserialize(bytecode);
 
         // Execute and verify
         var fields = new DocumentFields();
@@ -507,10 +507,10 @@ public class BytecodeVMTests
         try
         {
             // Save to file
-            _serializer.SaveToFile(compiled, tempFile);
+            BytecodeSerializer.SaveToFile(compiled, tempFile);
 
             // Load from file
-            var loaded = _serializer.LoadFromFile(tempFile);
+            var loaded = BytecodeSerializer.LoadFromFile(tempFile);
 
             // Execute and verify
             var fields = new DocumentFields();
@@ -531,7 +531,7 @@ public class BytecodeVMTests
     public void Deserialize_InvalidMagicHeader_ThrowsException()
     {
         byte[] invalidBytecode = System.Text.Encoding.ASCII.GetBytes("INVALID-MAGIC");
-        _serializer.Deserialize(invalidBytecode);
+        BytecodeSerializer.Deserialize(invalidBytecode);
     }
 
     #endregion

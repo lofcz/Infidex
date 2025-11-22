@@ -168,7 +168,7 @@ public class Tokenizer
     /// <summary>
     /// Extracts all n-grams of a specific size from the text
     /// </summary>
-    private void ExtractNGrams(string text, int n, List<Shingle> shingles)
+    private static void ExtractNGrams(string text, int n, List<Shingle> shingles)
     {
         if (text.Length < n)
             return;
@@ -188,7 +188,7 @@ public class Tokenizer
     /// <summary>
     /// Consolidates shingles by counting occurrences
     /// </summary>
-    private Shingle[] ConsolidateShingles(List<Shingle> shingles, out Dictionary<string, Shingle> dictionary)
+    private static Shingle[] ConsolidateShingles(List<Shingle> shingles, out Dictionary<string, Shingle> dictionary)
     {
         dictionary = new Dictionary<string, Shingle>();
         
@@ -232,7 +232,7 @@ public class Tokenizer
     /// <summary>
     /// Checks if a string consists only of padding characters
     /// </summary>
-    private bool IsAllPadding(string text)
+    private static bool IsAllPadding(string text)
     {
         foreach (char c in text)
         {

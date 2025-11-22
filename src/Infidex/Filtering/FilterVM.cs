@@ -17,7 +17,7 @@ public class FilterVM
     {
         _stack = new Stack<object?>();
         _constants = new ConstantPool();
-        _instructions = Array.Empty<Instruction>();
+        _instructions = [];
     }
     
     /// <summary>
@@ -32,7 +32,7 @@ public class FilterVM
         
         while (_ip < _instructions.Length)
         {
-            var instruction = _instructions[_ip];
+            Instruction instruction = _instructions[_ip];
             ExecuteInstruction(instruction, document);
             _ip++;
         }
@@ -41,7 +41,7 @@ public class FilterVM
         if (_stack.Count == 0)
             return false;
         
-        var result = _stack.Pop();
+        object? result = _stack.Pop();
         return result is bool b && b;
     }
     
@@ -135,14 +135,14 @@ public class FilterVM
                 break;
             case Opcode.JUMP_IF_FALSE:
                 {
-                    var value = _stack.Peek(); // Don't pop, just peek
+                    object? value = _stack.Peek(); // Don't pop, just peek
                     if (value is bool b && !b)
                         _ip = inst.Operand1 - 1;
                 }
                 break;
             case Opcode.JUMP_IF_TRUE:
                 {
-                    var value = _stack.Peek(); // Don't pop, just peek
+                    object? value = _stack.Peek(); // Don't pop, just peek
                     if (value is bool bt && bt)
                         _ip = inst.Operand1 - 1;
                 }
@@ -160,7 +160,7 @@ public class FilterVM
     private void ExecutePushField(int constantIndex, DocumentFields document)
     {
         string fieldName = (string)_constants.Get(constantIndex);
-        var field = document.GetField(fieldName);
+        Field? field = document.GetField(fieldName);
         _stack.Push(field?.Value);
     }
     
@@ -171,91 +171,91 @@ public class FilterVM
     
     private void ExecuteEQ()
     {
-        var right = _stack.Pop();
-        var left = _stack.Pop();
+        object? right = _stack.Pop();
+        object? left = _stack.Pop();
         _stack.Push(AreEqual(left, right));
     }
     
     private void ExecuteNEQ()
     {
-        var right = _stack.Pop();
-        var left = _stack.Pop();
+        object? right = _stack.Pop();
+        object? left = _stack.Pop();
         _stack.Push(!AreEqual(left, right));
     }
     
     private void ExecuteLT()
     {
-        var right = _stack.Pop();
-        var left = _stack.Pop();
+        object? right = _stack.Pop();
+        object? left = _stack.Pop();
         _stack.Push(CompareTo(left, right) < 0);
     }
     
     private void ExecuteLTE()
     {
-        var right = _stack.Pop();
-        var left = _stack.Pop();
+        object? right = _stack.Pop();
+        object? left = _stack.Pop();
         _stack.Push(CompareTo(left, right) <= 0);
     }
     
     private void ExecuteGT()
     {
-        var right = _stack.Pop();
-        var left = _stack.Pop();
+        object? right = _stack.Pop();
+        object? left = _stack.Pop();
         _stack.Push(CompareTo(left, right) > 0);
     }
     
     private void ExecuteGTE()
     {
-        var right = _stack.Pop();
-        var left = _stack.Pop();
+        object? right = _stack.Pop();
+        object? left = _stack.Pop();
         _stack.Push(CompareTo(left, right) >= 0);
     }
     
     private void ExecuteAND()
     {
-        var right = _stack.Pop() as bool? ?? false;
-        var left = _stack.Pop() as bool? ?? false;
+        bool right = _stack.Pop() as bool? ?? false;
+        bool left = _stack.Pop() as bool? ?? false;
         _stack.Push(left && right);
     }
     
     private void ExecuteOR()
     {
-        var right = _stack.Pop() as bool? ?? false;
-        var left = _stack.Pop() as bool? ?? false;
+        bool right = _stack.Pop() as bool? ?? false;
+        bool left = _stack.Pop() as bool? ?? false;
         _stack.Push(left || right);
     }
     
     private void ExecuteNOT()
     {
-        var value = _stack.Pop() as bool? ?? false;
+        bool value = _stack.Pop() as bool? ?? false;
         _stack.Push(!value);
     }
     
     private void ExecuteContains()
     {
-        var pattern = _stack.Pop()?.ToString() ?? string.Empty;
-        var text = _stack.Pop()?.ToString() ?? string.Empty;
+        string pattern = _stack.Pop()?.ToString() ?? string.Empty;
+        string text = _stack.Pop()?.ToString() ?? string.Empty;
         _stack.Push(text.Contains(pattern, StringComparison.OrdinalIgnoreCase));
     }
     
     private void ExecuteStartsWith()
     {
-        var pattern = _stack.Pop()?.ToString() ?? string.Empty;
-        var text = _stack.Pop()?.ToString() ?? string.Empty;
+        string pattern = _stack.Pop()?.ToString() ?? string.Empty;
+        string text = _stack.Pop()?.ToString() ?? string.Empty;
         _stack.Push(text.StartsWith(pattern, StringComparison.OrdinalIgnoreCase));
     }
     
     private void ExecuteEndsWith()
     {
-        var pattern = _stack.Pop()?.ToString() ?? string.Empty;
-        var text = _stack.Pop()?.ToString() ?? string.Empty;
+        string pattern = _stack.Pop()?.ToString() ?? string.Empty;
+        string text = _stack.Pop()?.ToString() ?? string.Empty;
         _stack.Push(text.EndsWith(pattern, StringComparison.OrdinalIgnoreCase));
     }
     
     private void ExecuteLike()
     {
-        var pattern = _stack.Pop()?.ToString() ?? string.Empty;
-        var text = _stack.Pop()?.ToString() ?? string.Empty;
+        string pattern = _stack.Pop()?.ToString() ?? string.Empty;
+        string text = _stack.Pop()?.ToString() ?? string.Empty;
         
         // Convert SQL LIKE pattern to regex
         string regexPattern = "^" + Regex.Escape(pattern)
@@ -267,8 +267,8 @@ public class FilterVM
     
     private void ExecuteMatches()
     {
-        var pattern = _stack.Pop()?.ToString() ?? string.Empty;
-        var text = _stack.Pop()?.ToString() ?? string.Empty;
+        string pattern = _stack.Pop()?.ToString() ?? string.Empty;
+        string text = _stack.Pop()?.ToString() ?? string.Empty;
         
         try
         {
@@ -282,8 +282,8 @@ public class FilterVM
     
     private void ExecuteIn()
     {
-        var array = _stack.Pop() as object[];
-        var value = _stack.Pop();
+        object[]? array = _stack.Pop() as object[];
+        object? value = _stack.Pop();
         
         if (array == null)
         {
@@ -292,7 +292,7 @@ public class FilterVM
         }
         
         bool found = false;
-        foreach (var item in array)
+        foreach (object item in array)
         {
             if (AreEqual(value, item))
             {
@@ -305,23 +305,23 @@ public class FilterVM
     
     private void ExecuteBetween()
     {
-        var max = _stack.Pop();
-        var min = _stack.Pop();
-        var value = _stack.Pop();
+        object? max = _stack.Pop();
+        object? min = _stack.Pop();
+        object? value = _stack.Pop();
         
         _stack.Push(CompareTo(value, min) >= 0 && CompareTo(value, max) <= 0);
     }
     
     private void ExecuteIsNull()
     {
-        var value = _stack.Pop();
+        object? value = _stack.Pop();
         bool isNull = value == null || (value is string str && string.IsNullOrEmpty(str));
         _stack.Push(isNull);
     }
     
     private void ExecuteIsNotNull()
     {
-        var value = _stack.Pop();
+        object? value = _stack.Pop();
         bool isNull = value == null || (value is string str && string.IsNullOrEmpty(str));
         _stack.Push(!isNull);
     }

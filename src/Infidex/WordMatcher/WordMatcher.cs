@@ -8,7 +8,7 @@ namespace Infidex.WordMatcher;
 /// High-performance word-based index for fast exact and fuzzy word matching.
 /// Supports exact matching, LD1 (Levenshtein Distance 1), and affix matching.
 /// </summary>
-public class WordMatcher : IDisposable
+public sealed class WordMatcher : IDisposable
 {
     private readonly Dictionary<string, HashSet<int>> _exactIndex;
     private readonly Dictionary<string, HashSet<int>> _ld1Index; // Levenshtein Distance 1
@@ -141,12 +141,7 @@ public class WordMatcher : IDisposable
     public HashSet<int> LookupAffix(string query, FilterMask? filter = null)
     {
         HashSet<int> results = [];
-        
-        if (_affixIndex != null)
-        {
-            _affixIndex.Lookup(query.ToLowerInvariant(), filter, results);
-        }
-        
+        _affixIndex?.Lookup(query.ToLowerInvariant(), filter, results);
         return results;
     }
     
@@ -168,7 +163,7 @@ public class WordMatcher : IDisposable
         }
     }
     
-    private void AddToIndex(Dictionary<string, HashSet<int>> index, string word, int docIndex)
+    private static void AddToIndex(Dictionary<string, HashSet<int>> index, string word, int docIndex)
     {
         if (!index.TryGetValue(word, out HashSet<int>? docs))
         {
@@ -183,8 +178,8 @@ public class WordMatcher : IDisposable
         Dispose(true);
         GC.SuppressFinalize(this);
     }
-    
-    protected virtual void Dispose(bool disposing)
+
+    private void Dispose(bool disposing)
     {
         if (_disposed) return;
         

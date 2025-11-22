@@ -88,7 +88,7 @@ public class Result
     /// </summary>
     public static Result MakeEmptyResult(bool timedOut = false)
     {
-        return new Result(Array.Empty<ScoreEntry>(), null, 0, 0, timedOut);
+        return new Result([], null, 0, 0, timedOut);
     }
 }
 

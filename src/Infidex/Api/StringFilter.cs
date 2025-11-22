@@ -49,7 +49,7 @@ public class StringFilter : Filter
         };
     }
     
-    private bool MatchesLikePattern(string text, string pattern)
+    private static bool MatchesLikePattern(string text, string pattern)
     {
         // Convert SQL LIKE pattern to simple matching
         // % = any characters, _ = single character
@@ -67,6 +67,6 @@ public class StringFilter : Filter
         StringOperation.EndsWith => $"{FieldName} ENDS WITH '{Pattern}'",
         StringOperation.Like => $"{FieldName} LIKE '{Pattern}'",
         _ => base.ToString()
-    };
+    } ?? string.Empty;
 }
 

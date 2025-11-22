@@ -103,7 +103,7 @@ public class CompositeFilter : Filter
         }
     }
     
-    private bool EvaluateFilter(Filter filter, DocumentFields fields)
+    private static bool EvaluateFilter(Filter filter, DocumentFields fields)
     {
         // Handle nested composite filters recursively
         if (filter is CompositeFilter composite)
@@ -112,7 +112,7 @@ public class CompositeFilter : Filter
         }
         
         // Handle simple filters
-        var field = fields.GetField(filter.FieldName);
+        Field? field = fields.GetField(filter.FieldName);
         if (field == null)
             return false;
         

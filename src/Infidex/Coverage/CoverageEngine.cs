@@ -29,18 +29,46 @@ public class CoverageEngine
     /// <param name="wordHits">Output: number of word matches found</param>
     public byte CalculateCoverageScore(string query, string documentText, double lcsSum, out int wordHits)
     {
-        wordHits = 0;
+        CoverageSummary summary = CalculateCoverageSummary(query, documentText, lcsSum);
+        wordHits = summary.TotalWordHits;
+        return summary.AggregateScore;
+    }
+
+    /// <summary>
+    /// Calculates detailed coverage information for a query-document pair,
+    /// including aggregate score and per-term coverage metrics.
+    /// </summary>
+    public CoverageSummary CalculateCoverageSummary(string query, string documentText, double lcsSum)
+    {
+        CoverageSummary summary = new CoverageSummary();
+        summary.Terms = [];
+        summary.AggregateScore = 0;
+        summary.TotalWordHits = 0;
+        
+        int wordHits = 0;
         double queryLength = query.Length;
         
         if (queryLength == 0)
-            return 0;
+            return summary;
         
         // Tokenize into words
         HashSet<string> queryWords = _tokenizer.GetWordTokensForCoverage(query, _setup.MinWordSize);
         HashSet<string> docWords = _tokenizer.GetWordTokensForCoverage(documentText, _setup.MinWordSize);
         
         if (queryWords.Count == 0)
-            return 0;
+            return summary;
+        
+        // Initialize per-term coverage map (distinct query words)
+        Dictionary<string, TermCoverageInfo> termCoverage = new Dictionary<string, TermCoverageInfo>(StringComparer.OrdinalIgnoreCase);
+        foreach (string w in queryWords)
+        {
+            termCoverage[w] = new TermCoverageInfo
+            {
+                QueryWord = w,
+                MaxChars = w.Length,
+                MatchedChars = 0.0
+            };
+        }
         
         double num = 0.0;  // Whole words matched chars
         double num2 = 0.0; // Joined words matched chars
@@ -51,8 +79,8 @@ public class CoverageEngine
         bool debug = Environment.GetEnvironmentVariable("INFIDEX_COVERAGE_DEBUG") == "1";
         if (debug)
         {
-            Console.WriteLine($"[COV] query=\"{query}\", docSnippet=\"{documentText[..Math.Min(documentText.Length, 60)]}\"");
-            Console.WriteLine($"[COV]   MinWordSize={_setup.MinWordSize}, LevenshteinMaxWordSize={_setup.LevenshteinMaxWordSize}, CoverWholeQuery={_setup.CoverWholeQuery}");
+            string docSnippet = documentText.Length > 60 ? documentText.Substring(0, 60) + "..." : documentText;
+            Console.WriteLine($"[COV] query=\"{query}\", doc=\"{docSnippet}\"");
             Console.WriteLine($"[COV]   queryWords=[{string.Join(", ", queryWords)}]");
             Console.WriteLine($"[COV]   docWords=[{string.Join(", ", docWords)}]");
         }
@@ -60,14 +88,7 @@ public class CoverageEngine
         // Algorithm 1: Exact Whole Word Matching
         if (_setup.CoverWholeWords)
         {
-            num = CoverWholeWords(queryWords, docWords, out wordHits, ref b);
-            if (num >= queryLength)
-            {
-                byte score = (byte)(255 - b);
-                if (debug)
-                    Console.WriteLine($"[COV] WholeWords early-exit: num={num}, penalty={b}, score={score}");
-                return score;
-            }
+            num = CoverWholeWords(queryWords, docWords, termCoverage, out wordHits, ref b);
         }
         
         double num6 = num;
@@ -75,42 +96,43 @@ public class CoverageEngine
         // Algorithm 2: Joined/Split Words
         if (_setup.CoverJoinedWords && queryWords.Count > 0)
         {
-            num2 = CoverJoinedWords(queryWords, docWords, out int num7);
+            num2 = CoverJoinedWords(queryWords, docWords, termCoverage, out int num7);
             wordHits += num7;
             num6 = num2;
-            if (num6 >= queryLength)
-            {
-                if (debug)
-                    Console.WriteLine($"[COV] JoinedWords early-exit: num2={num2}, score=255");
-                return byte.MaxValue;
-            }
         }
         
         // Algorithm 3: Fuzzy Word Matching (Levenshtein)
         if (_setup.CoverFuzzyWords && queryWords.Count > 0)
         {
-            int num8 = 1; // Max edit distance
-            num3 = CoverFuzzyWords(queryWords, docWords, num8, out int num9);
+            // Normalized edit distance threshold for fuzzy matches:
+            // dist(q,d) / max(|q|,|d|) <= maxRelativeDistance
+            const double maxRelativeDistance = 0.25;
+            int maxQueryLength = 0;
+            foreach (string qw in queryWords)
+            {
+                if (qw.Length > maxQueryLength)
+                    maxQueryLength = qw.Length;
+            }
+
+            int maxEditDistance = Math.Max(1, (int)Math.Round(maxQueryLength * maxRelativeDistance));
+
+            num3 = CoverFuzzyWords(queryWords, docWords, termCoverage, maxEditDistance, maxRelativeDistance, out int num9);
             wordHits += num9;
             num6 += num3;
-            if (num6 >= queryLength)
-            {
-                if (debug)
-                    Console.WriteLine($"[COV] Fuzzy early-exit: num3={num3}, score=255");
-                return byte.MaxValue;
-            }
         }
         
         // Algorithm 4: Prefix/Suffix Matching
         if (_setup.CoverPrefixSuffix && queryWords.Count > 0)
         {
-            num4 = CoverPrefixSuffix(queryWords, docWords, out int num10);
-            wordHits += num10;
-            if (num6 + num4 >= queryLength)
+            if (debug)
             {
-                if (debug)
-                    Console.WriteLine($"[COV] PrefixSuffix early-exit: num4={num4}, score=255");
-                return byte.MaxValue;
+                Console.WriteLine($"[COV] Before Prefix/Suffix: queryWords=[{string.Join(", ", queryWords)}], docWords=[{string.Join(", ", docWords)}]");
+            }
+            num4 = CoverPrefixSuffix(queryWords, docWords, termCoverage, out int num10);
+            wordHits += num10;
+            if (debug)
+            {
+                Console.WriteLine($"[COV] After Prefix/Suffix: num4={num4}, wordHits={num10}");
             }
         }
         
@@ -121,7 +143,7 @@ public class CoverageEngine
         }
         
         // Combine results: num2 + num + num3 + num4 - penalty
-        double num11 = num2 + num + num3 + num4 - (double)(int)b;
+        double num11 = num2 + num + num3 + num4 - b;
         if (debug)
         {
             Console.WriteLine($"[COV] totals: whole={num}, joined={num2}, fuzzy={num3}, affix={num4}, penalty={b}, combined={num11}, lcsSum={lcsSum}");
@@ -139,16 +161,21 @@ public class CoverageEngine
         byte final = (byte)Math.Min(num11 / queryLength * 255.0, 255.0);
         if (debug)
             Console.WriteLine($"[COV] finalScore={final}");
-        return final;
+        
+        summary.AggregateScore = final;
+        summary.TotalWordHits = wordHits;
+        summary.Terms = termCoverage.Values.ToList();
+        return summary;
     }
     
     /// <summary>
     /// Algorithm 1: Exact whole word matching with order penalty
     /// Matches t9rpF59p9r exactly
     /// </summary>
-    private double CoverWholeWords(
+    private static double CoverWholeWords(
         HashSet<string> queryWords, 
         HashSet<string> docWords, 
+        Dictionary<string, TermCoverageInfo> termCoverage,
         out int wordHits,
         ref byte penalty)
     {
@@ -170,7 +197,14 @@ public class CoverageEngine
                 continue;
             }
             wordHits++;
-            num += (double)array[i].Length;
+            num += array[i].Length;
+            
+            if (termCoverage.TryGetValue(text, out TermCoverageInfo? infoWhole))
+            {
+                infoWhole.MatchedChars += array[i].Length;
+                infoWhole.HasWholeWordMatch = true;
+                termCoverage[text] = infoWhole;
+            }
             if (array2.Length > i)
             {
                 if (array2[i] != text)
@@ -184,7 +218,7 @@ public class CoverageEngine
             }
             if (i < count - 1)
             {
-                num += (double)num2;
+                num += num2;
             }
             queryWords.Remove(text);
             docWords.Remove(text);
@@ -195,9 +229,10 @@ public class CoverageEngine
     /// <summary>
     /// Algorithm 2: Detects joined/split words (e.g., "newyork" vs "new york")
     /// </summary>
-    private double CoverJoinedWords(
+    private static double CoverJoinedWords(
         HashSet<string> queryWords, 
-        HashSet<string> docWords, 
+        HashSet<string> docWords,
+        Dictionary<string, TermCoverageInfo> termCoverage,
         out int wordHits)
     {
         double matchedChars = 0.0;
@@ -215,6 +250,19 @@ public class CoverageEngine
             {
                 matchedChars += joined.Length;
                 wordHits += 2;
+                
+                if (termCoverage.TryGetValue(queryList[i], out TermCoverageInfo? info1))
+                {
+                    info1.MatchedChars += queryList[i].Length;
+                    info1.HasJoinedMatch = true;
+                    termCoverage[queryList[i]] = info1;
+                }
+                if (termCoverage.TryGetValue(queryList[i + 1], out TermCoverageInfo? info2))
+                {
+                    info2.MatchedChars += queryList[i + 1].Length;
+                    info2.HasJoinedMatch = true;
+                    termCoverage[queryList[i + 1]] = info2;
+                }
                 queryWords.Remove(queryList[i]);
                 queryWords.Remove(queryList[i + 1]);
                 docWords.Remove(joined);
@@ -231,6 +279,13 @@ public class CoverageEngine
             {
                 matchedChars += joined.Length;
                 wordHits += 1;
+                
+                if (termCoverage.TryGetValue(joined, out TermCoverageInfo? infoJoined))
+                {
+                    infoJoined.MatchedChars += joined.Length;
+                    infoJoined.HasJoinedMatch = true;
+                    termCoverage[joined] = infoJoined;
+                }
                 queryWords.Remove(joined);
                 docWords.Remove(docList[i]);
                 docWords.Remove(docList[i + 1]);
@@ -242,64 +297,91 @@ public class CoverageEngine
     }
     
     /// <summary>
-    /// Algorithm 3: Fuzzy word matching using Levenshtein distance
-    /// Matches CeBpwYr5OP exactly
+    /// Algorithm 3: Fuzzy word matching using Levenshtein distance.
+    /// Uses a normalized edit distance threshold:
+    ///   dist(q, d) / max(|q|, |d|) <= maxRelativeDistance
+    /// to accept matches in a length-independent way.
     /// </summary>
     private double CoverFuzzyWords(
-        HashSet<string> queryWords, 
-        HashSet<string> docWords, 
+        HashSet<string> queryWords,
+        HashSet<string> docWords,
+        Dictionary<string, TermCoverageInfo> termCoverage,
         int maxEditDistance,
+        double maxRelativeDistance,
         out int wordHits)
     {
         wordHits = 0;
-        double num = 0.0;
-        string[] array = queryWords.ToArray();
-        string[] array2 = docWords.ToArray();
+        double matchedChars = 0.0;
+
+        string[] queryArray = queryWords.ToArray();
+        string[] docArray = docWords.ToArray();
+
         for (int i = 1; i <= maxEditDistance; i++)
         {
-            for (int j = 0; j < array.Length; j++)
+            for (int q = 0; q < queryArray.Length; q++)
             {
-                int num2 = Math.Max(_setup.MinWordSize + 1, array[j].Length - i);
-                int num3 = Math.Min(_setup.LevenshteinMaxWordSize, array[j].Length + i);
-                if (num3 > 63)
+                string qw = queryArray[q];
+
+                int minLen = Math.Max(_setup.MinWordSize + 1, qw.Length - i);
+                int maxLen = Math.Min(_setup.LevenshteinMaxWordSize, qw.Length + i);
+                if (maxLen > 63)
                 {
-                    num3 = 63;
+                    maxLen = 63;
                 }
-                if (array[j].Length > num3 || array[j].Length < num2)
+
+                if (qw.Length > maxLen || qw.Length < minLen)
                 {
                     continue;
                 }
+
                 // Use our Levenshtein implementation (original uses BitParallelDiagonalLevenshtein64bit)
-                for (int k = 0; k < array2.Length; k++)
+                for (int d = 0; d < docArray.Length; d++)
                 {
-                    if (array2[k].Length > num3 || array2[k].Length < num2)
+                    string dw = docArray[d];
+
+                    if (dw.Length > maxLen || dw.Length < minLen)
                     {
                         continue;
                     }
-                    int num4 = LevenshteinDistance.Calculate(array[j], array2[k], i);
-                    if (num4 <= i)
+
+                    int dist = LevenshteinDistance.Calculate(qw, dw, i);
+                    if (dist <= i)
                     {
-                        if (docWords.Contains(array2[k]))
+                        double norm = (double)dist / Math.Max(qw.Length, dw.Length);
+                        if (norm <= maxRelativeDistance)
                         {
-                            wordHits++;
+                            if (docWords.Contains(dw))
+                            {
+                                wordHits++;
+                            }
+
+                            matchedChars += qw.Length - dist;
+
+                            if (termCoverage.TryGetValue(qw, out TermCoverageInfo? infoFuzzy))
+                            {
+                                infoFuzzy.MatchedChars += qw.Length - dist;
+                                infoFuzzy.HasFuzzyMatch = true;
+                                termCoverage[qw] = infoFuzzy;
+                            }
+                            queryWords.Remove(qw);
+                            docWords.Remove(dw);
+                            break;
                         }
-                        num += (double)(array[j].Length - num4);
-                        queryWords.Remove(array[j]);
-                        docWords.Remove(array2[k]);
-                        break;
                     }
                 }
             }
         }
-        return num;
+
+        return matchedChars;
     }
     
     /// <summary>
     /// Algorithm 4: Prefix and suffix matching
     /// </summary>
-    private double CoverPrefixSuffix(
+    private static double CoverPrefixSuffix(
         HashSet<string> queryWords, 
-        HashSet<string> docWords, 
+        HashSet<string> docWords,
+        Dictionary<string, TermCoverageInfo> termCoverage,
         out int wordHits)
     {
         double matchedChars = 0.0;
@@ -324,13 +406,18 @@ public class CoverageEngine
                     // Check if query is prefix of doc
                     if (docWord.StartsWith(queryWord, StringComparison.OrdinalIgnoreCase))
                     {
-                        matchScore = queryWord.Length - 1;
+                        // Prefix matches are typically a stronger signal of intent
+                        // (e.g., \"sh\" -> \"Shawshank\"), so give them full weight.
+                        matchScore = queryWord.Length;
                         isMatch = true;
                     }
                     // Check if query is suffix of doc
                     else if (docWord.EndsWith(queryWord, StringComparison.OrdinalIgnoreCase))
                     {
-                        matchScore = queryWord.Length - 1;
+                        // Suffix matches (e.g., \"sh\" -> \"Cash\") are weaker: they often
+                        // correspond to different roots. Give them reduced weight so that,
+                        // all else equal, prefix matches outrank suffix-only matches.
+                        matchScore = Math.Max(1, queryWord.Length / 2);
                         isMatch = true;
                     }
                 }
@@ -339,6 +426,14 @@ public class CoverageEngine
                 {
                     matchedChars += matchScore;
                     wordHits++;
+
+                    if (termCoverage.TryGetValue(queryWord, out TermCoverageInfo? infoPrefixSuffix))
+                    {
+                        infoPrefixSuffix.MatchedChars += matchScore;
+                        infoPrefixSuffix.HasPrefixSuffixMatch = true;
+                        termCoverage[queryWord] = infoPrefixSuffix;
+                    }
+
                     matched.Add((queryWord, docWord));
                     break;
                 }
@@ -354,4 +449,30 @@ public class CoverageEngine
         
         return matchedChars;
     }
+}
+
+/// <summary>
+/// Per-term coverage information for a single normalized query word.
+/// </summary>
+public class TermCoverageInfo
+{
+    public string QueryWord { get; set; } = string.Empty;
+    public int MaxChars { get; set; }
+    public double MatchedChars { get; set; }
+    
+    public bool HasWholeWordMatch { get; set; }
+    public bool HasJoinedMatch { get; set; }
+    public bool HasFuzzyMatch { get; set; }
+    public bool HasPrefixSuffixMatch { get; set; }
+}
+
+/// <summary>
+/// Detailed coverage summary for a query-document pair.
+/// Contains the aggregate coverage score plus per-term coverage info.
+/// </summary>
+public class CoverageSummary
+{
+    public byte AggregateScore { get; set; }
+    public int TotalWordHits { get; set; }
+    public List<TermCoverageInfo> Terms { get; set; } = [];
 }

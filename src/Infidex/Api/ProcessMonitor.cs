@@ -39,10 +39,10 @@ public class ProcessMonitor : IDisposable
             _progressPercent = clamped;
             
             // Safely invoke all subscribers
-            var handlers = ProgressChanged;
+            Action<int>? handlers = ProgressChanged;
             if (handlers != null)
             {
-                foreach (var handler in handlers.GetInvocationList())
+                foreach (Delegate handler in handlers.GetInvocationList())
                 {
                     try
                     {
@@ -243,7 +243,7 @@ public class ProcessMonitor : IDisposable
             _startedEvent.Reset();
             _completedEvent.Reset();
             
-            var oldCts = _cts;
+            CancellationTokenSource? oldCts = _cts;
             _cts = new CancellationTokenSource();
             oldCts?.Dispose();
             

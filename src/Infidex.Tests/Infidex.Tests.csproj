@@ -13,6 +13,14 @@
         <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.8.0"/>
         <PackageReference Include="MSTest.TestAdapter" Version="3.1.1"/>
         <PackageReference Include="MSTest.TestFramework" Version="3.1.1"/>
+        <PackageReference Include="CsvHelper" Version="33.1.0" />
+    </ItemGroup>
+
+    <ItemGroup>
+        <None Include="..\Infidex.Benchmark\movies.csv">
+            <Link>movies.csv</Link>
+            <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+        </None>
     </ItemGroup>
 
     <ItemGroup>

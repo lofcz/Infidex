@@ -51,14 +51,14 @@ internal static class FilterParser
         }
         
         _currentExpression = expression;
-        var tokens = Tokenize(expression);
+        List<Token> tokens = Tokenize(expression);
         int position = 0;
-        var result = ParseTernaryExpression(tokens, ref position);
+        Filter result = ParseTernaryExpression(tokens, ref position);
         
         // Check for unparsed tokens (e.g., extra closing parentheses)
         if (position < tokens.Count)
         {
-            var token = tokens[position];
+            Token token = tokens[position];
             throw new FilterParseException(
                 $"Unexpected token '{token.Value}' after complete expression.",
                 expression,
@@ -224,7 +224,7 @@ internal static class FilterParser
             }
             pos++; // consume (
             
-            var values = new List<object>();
+            List<object> values = [];
             while (pos < tokens.Count && tokens[pos].Type != TokenType.RightParen)
             {
                 if (tokens[pos].Type != TokenType.Value)
@@ -457,7 +457,7 @@ internal static class FilterParser
     
     private static List<Token> Tokenize(string expression)
     {
-        var tokens = new List<Token>();
+        List<Token> tokens = [];
         int i = 0;
         
         while (i < expression.Length)
@@ -574,7 +574,7 @@ internal static class FilterParser
             {
                 char quote = expression[i];
                 i++; // skip opening quote
-                var sb = new StringBuilder();
+                StringBuilder sb = new StringBuilder();
                 while (i < expression.Length && expression[i] != quote)
                 {
                     sb.Append(expression[i]);
@@ -596,7 +596,7 @@ internal static class FilterParser
             // Keywords and identifiers
             if (char.IsLetter(expression[i]) || expression[i] == '_')
             {
-                var sb = new StringBuilder();
+                StringBuilder sb = new StringBuilder();
                 while (i < expression.Length && (char.IsLetterOrDigit(expression[i]) || expression[i] == '_'))
                 {
                     sb.Append(expression[i]);
@@ -631,7 +631,7 @@ internal static class FilterParser
             // Numbers (as values)
             if (char.IsDigit(expression[i]))
             {
-                var sb = new StringBuilder();
+                StringBuilder sb = new StringBuilder();
                 while (i < expression.Length && (char.IsDigit(expression[i]) || expression[i] == '.'))
                 {
                     sb.Append(expression[i]);

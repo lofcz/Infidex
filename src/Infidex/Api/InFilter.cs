@@ -18,7 +18,7 @@ public class InFilter : Filter
         if (fieldValue == null)
             return false;
         
-        foreach (var value in Values)
+        foreach (object value in Values)
         {
             if (fieldValue.Equals(value))
                 return true;

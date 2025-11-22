@@ -1,3 +1,4 @@
+using Infidex.Api;
 using Infidex.Core;
 using Infidex.Coverage;
 using Infidex.Indexing;
@@ -6,6 +7,7 @@ using Infidex.Utilities;
 using Infidex.Metrics;
 using Infidex.Internalized.CommunityToolkit;
 using Infidex.Filtering;
+using System.Collections.Concurrent;
 
 namespace Infidex;
 
@@ -34,11 +36,14 @@ public class SearchEngine : IDisposable
     private Api.DocumentFields? _documentFieldSchema;
     
     // Bytecode VM for filter execution
-    private readonly FilterCompiler _filterCompiler = new FilterCompiler();
-    private readonly FilterVM _filterVM = new FilterVM();
-    private readonly Dictionary<Api.Filter, CompiledFilter> _compiledFilterCache = new Dictionary<Api.Filter, CompiledFilter>();
+    // Thread-local to avoid state corruption between concurrent threads
+    private readonly ThreadLocal<FilterCompiler> _filterCompiler = new ThreadLocal<FilterCompiler>(() => new FilterCompiler());
+    private readonly ThreadLocal<FilterVM> _filterVM = new ThreadLocal<FilterVM>(() => new FilterVM());
+    // Thread-safe cache for compiled filters
+    private readonly ConcurrentDictionary<Api.Filter, CompiledFilter> _compiledFilterCache = new ConcurrentDictionary<Api.Filter, CompiledFilter>();
     
     // Concurrency management
+    // Reader/writer lock: multiple concurrent searches, writers block readers.
     private readonly ReaderWriterLockSlim _rwLock = new ReaderWriterLockSlim();
     private volatile SearchEngineStatus _status = SearchEngineStatus.Ready;
     
@@ -162,10 +167,10 @@ public class SearchEngine : IDisposable
         {
             Status = SearchEngineStatus.Indexing;
             IndexDocumentsInternal(documents, progress);
+            Status = SearchEngineStatus.Ready;
         }
         finally
         {
-            Status = SearchEngineStatus.Ready;
             _rwLock.ExitWriteLock();
         }
     }
@@ -189,10 +194,10 @@ public class SearchEngine : IDisposable
                 cancellationToken.ThrowIfCancellationRequested();
                 
                 IndexDocumentsInternal(documents, progress, cancellationToken);
+                Status = SearchEngineStatus.Ready;
             }
             finally
             {
-                Status = SearchEngineStatus.Ready;
                 _rwLock.ExitWriteLock();
             }
         }, cancellationToken);
@@ -242,11 +247,16 @@ public class SearchEngine : IDisposable
         try
         {
             cancellationToken.ThrowIfCancellationRequested();
+            
             // Calculate TF-IDF weights after all documents are indexed (Phase 2: 50-100%)
-            // Note: VectorModel.CalculateWeights doesn't take a token in the current API, 
-            // but BuildInvertedLists does.
-            _vectorModel.BuildInvertedLists(cancellationToken: cancellationToken);
-            _isIndexed = true;
+            // We only perform the expensive global rebuild on the first full indexing pass.
+            // Subsequent IndexDocuments calls are treated as incremental updates: they
+            // update the inverted index structures but avoid re-normalizing the entire corpus.
+            if (!_isIndexed)
+            {
+                _vectorModel.BuildInvertedLists(cancellationToken: cancellationToken);
+                _isIndexed = true;
+            }
         }
         finally
         {
@@ -270,10 +280,10 @@ public class SearchEngine : IDisposable
             Document stored = _vectorModel.IndexDocument(document);
             _wordMatcher?.Load(stored.IndexedText, stored.Id);
             _isIndexed = false;
+            Status = SearchEngineStatus.Ready;
         }
         finally
         {
-            Status = SearchEngineStatus.Ready;
             _rwLock.ExitWriteLock();
         }
     }
@@ -290,10 +300,10 @@ public class SearchEngine : IDisposable
             Status = SearchEngineStatus.Indexing;
             _vectorModel.CalculateWeights();
             _isIndexed = true;
+            Status = SearchEngineStatus.Ready;
         }
         finally
         {
-            Status = SearchEngineStatus.Ready;
             _rwLock.ExitWriteLock();
         }
     }
@@ -312,10 +322,10 @@ public class SearchEngine : IDisposable
                 cancellationToken.ThrowIfCancellationRequested();
                 _vectorModel.BuildInvertedLists(cancellationToken: cancellationToken);
                 _isIndexed = true;
+                Status = SearchEngineStatus.Ready;
             }
             finally
             {
-                Status = SearchEngineStatus.Ready;
                 _rwLock.ExitWriteLock();
             }
         }, cancellationToken);
@@ -333,11 +343,16 @@ public class SearchEngine : IDisposable
         _rwLock.EnterReadLock();
         try
         {
+            // If the index is not yet fully built, treat as an empty index rather than throwing.
+            // This makes concurrent search+indexing scenarios safe: searches will either block
+            // until indexing completes or see an empty, consistent snapshot.
             if (!_isIndexed)
-                throw new InvalidOperationException("Index weights not calculated. Call CalculateWeights() first.");
+            {
+                return Api.Result.MakeEmptyResult();
+            }
             
             // Validate and normalize query
-            var normalizedQuery = new Api.Query(query);
+            Query normalizedQuery = new Api.Query(query);
             normalizedQuery.Text = normalizedQuery.Text.Trim().ToLowerInvariant();
             normalizedQuery.TimeOutLimitMilliseconds = Math.Clamp(normalizedQuery.TimeOutLimitMilliseconds, 0, 10000);
             
@@ -345,17 +360,17 @@ public class SearchEngine : IDisposable
             if (string.IsNullOrWhiteSpace(normalizedQuery.Text) && normalizedQuery.EnableFacets)
             {
                 // Return all documents with facets
-                var allResults = new List<ScoreEntry>();
+                List<ScoreEntry> allResults = [];
                 for (int i = 0; i < _vectorModel.Documents.Count; i++)
                 {
-                    var doc = _vectorModel.Documents.GetDocument(i);
+                    Document? doc = _vectorModel.Documents.GetDocument(i);
                     if (doc != null && !doc.Deleted)
                     {
                         allResults.Add(new ScoreEntry(255, doc.DocumentKey)); // Max score for all
                     }
                 }
                 
-                var allResultsArray = allResults.ToArray();
+                ScoreEntry[] allResultsArray = allResults.ToArray();
                 
                 // Apply filter if specified
                 if (normalizedQuery.Filter != null)
@@ -363,8 +378,8 @@ public class SearchEngine : IDisposable
                     allResultsArray = ApplyFilter(allResultsArray, normalizedQuery.Filter);
                 }
                 
-                var topResultsArray = allResultsArray.Take(normalizedQuery.MaxNumberOfRecordsToReturn).ToArray();
-                var facetsAll = FacetBuilder.BuildFacets(topResultsArray, _vectorModel.Documents, _documentFieldSchema);
+                ScoreEntry[] topResultsArray = allResultsArray.Take(normalizedQuery.MaxNumberOfRecordsToReturn).ToArray();
+                Dictionary<string, KeyValuePair<string, int>[]> facetsAll = FacetBuilder.BuildFacets(topResultsArray, _vectorModel.Documents, _documentFieldSchema);
                 
                 return new Api.Result(topResultsArray, facetsAll,
                     topResultsArray.Length > 0 ? topResultsArray.Length - 1 : 0,
@@ -546,7 +561,7 @@ public class SearchEngine : IDisposable
                         int lcsFromSpan = 0;
                         if (docIndex < lcsAndWordHitsSpan.Height)
                         {
-                            lcsFromSpan = (int)lcsAndWordHitsSpan[0, docIndex];
+                            lcsFromSpan = lcsAndWordHitsSpan[0, docIndex];
                             if (lcsFromSpan == 0)
                             {
                                 int errorTolerance = 0;
@@ -560,11 +575,13 @@ public class SearchEngine : IDisposable
                             }
                         }
 
-                        byte coverageScore = _coverageEngine.CalculateCoverageScore(
+                        CoverageSummary coverageSummary = _coverageEngine.CalculateCoverageSummary(
                             searchText,
                             docText,
-                            lcsFromSpan,
-                            out int wordHits);
+                            lcsFromSpan);
+
+                        byte coverageScore = coverageSummary.AggregateScore;
+                        int wordHits = coverageSummary.TotalWordHits;
 
                         if (docIndex < lcsAndWordHitsSpan.Height && lcsAndWordHitsSpan[1, docIndex] == 0)
                         {
@@ -603,7 +620,7 @@ public class SearchEngine : IDisposable
                         int lcsFromSpan = 0;
                         if (docIndex < lcsAndWordHitsSpan.Height)
                         {
-                            lcsFromSpan = (int)lcsAndWordHitsSpan[0, docIndex];
+                            lcsFromSpan = lcsAndWordHitsSpan[0, docIndex];
                             if (lcsFromSpan == 0)
                             {
                                 int errorTolerance = 0;
@@ -617,11 +634,23 @@ public class SearchEngine : IDisposable
                             }
                         }
 
-                        byte coverageScore = _coverageEngine.CalculateCoverageScore(
+                        CoverageSummary coverageSummary = _coverageEngine.CalculateCoverageSummary(
                             searchText,
                             docText,
-                            lcsFromSpan,
-                            out int wordHits);
+                            lcsFromSpan);
+
+                        byte coverageScore = coverageSummary.AggregateScore;
+                        int wordHits = coverageSummary.TotalWordHits;
+
+                        if (EnableDebugLogging)
+                        {
+                            string docPreview = docText.Length > 50 ? docText.Substring(0, 50) + "..." : docText;
+                            Console.WriteLine($"[COV-SUMMARY] doc=\"{docPreview}\", query=\"{searchText}\"");
+                            foreach (TermCoverageInfo term in coverageSummary.Terms)
+                            {
+                                Console.WriteLine($"  Term: \"{term.QueryWord}\", MaxChars={term.MaxChars}, MatchedChars={term.MatchedChars}");
+                            }
+                        }
 
                         if (docIndex < lcsAndWordHitsSpan.Height && lcsAndWordHitsSpan[1, docIndex] == 0)
                         {
@@ -631,16 +660,52 @@ public class SearchEngine : IDisposable
                         maxWordHits = Math.Max(maxWordHits, wordHits);
                         
                         // Score fusion: (!isFromWordMatcher && coverage <= relevancy) ? relevancy : coverage
-                        byte finalScore = (!false && coverageScore <= candidate.Score)
+                        byte baseScore = coverageScore <= candidate.Score
                             ? candidate.Score
                             : coverageScore;
+
+                        // Generic scoring model combining:
+                        // Q = baseScore / 255 in [0,1]  -> overall match quality (TF-IDF / coverage)
+                        // C_coord = per-term coverage coordination factor in [0,1]:
+                        //   C_coord = (1 / n) * sum_i c_i,  c_i = min(1, matchedChars_i / |q_i|)
+                        //
+                        // We encode lexicographic preference (C_coord first, Q second) into a single byte:
+                        //  - High 6 bits: coverage tier  (0-63)
+                        //  - Low  2 bits: quality tier   (0-3)
+                        //
+                        // This guarantees that any document with strictly higher coverage tier
+                        // will outrank one with lower coverage, regardless of Q, while still
+                        // allowing Q to break ties within the same coverage tier.
+                        
+                        float Q = baseScore / 255f;
+
+                        float coordCoverage = 0f;
+                        if (coverageSummary.Terms.Count > 0)
+                        {
+                            float sumCi = 0f;
+                            foreach (TermCoverageInfo termInfo in coverageSummary.Terms)
+                            {
+                                if (termInfo.MaxChars <= 0)
+                                    continue;
+                                
+                                float ci = (float)Math.Min(1.0, termInfo.MatchedChars / termInfo.MaxChars);
+                                sumCi += ci;
+                            }
+
+                            coordCoverage = sumCi / coverageSummary.Terms.Count;
+                        }
+
+                        int coverageTier = (int)Math.Clamp(coordCoverage * 63f, 0f, 63f);
+                        int qualityTier = (int)Math.Clamp(Q * 3f, 0f, 3f);
+
+                        byte finalScore = (byte)((coverageTier << 2) | qualityTier);
 
                         if (EnableDebugLogging)
                         {
                             Console.WriteLine(
                                 $"[DEBUG] Coverage (TF-IDF): docKey={doc.DocumentKey}, relevancy={candidate.Score}, " +
-                                $"coverage={coverageScore}, wordHits={wordHits}, lcsFromSpan={lcsFromSpan}, " +
-                                $"finalScore={finalScore}");
+                                $"coverage={coverageScore}, wordHits={wordHits}, " +
+                                $"Q={Q:F3}, coordCoverage={coordCoverage:F3}, finalScore={finalScore}");
                         }
 
                         finalScores.Add(doc.DocumentKey, finalScore);
@@ -719,7 +784,7 @@ public class SearchEngine : IDisposable
                 SpanAlloc.Free(bestSegmentsPointer);
         }
     }
-
+    
     /// <summary>
     /// Looks up fuzzy word matches (exact, LD1, affix) using the WordMatcher.
     /// Returns internal document indices.
@@ -754,7 +819,7 @@ public class SearchEngine : IDisposable
     /// <summary>
     /// Consolidates segment scores to return only the best-scoring segment per DocumentKey
     /// </summary>
-    private ScoreArray ConsolidateSegments(ScoreArray scores, Span2D<byte> bestSegments)
+    private static ScoreArray ConsolidateSegments(ScoreArray scores, Span2D<byte> bestSegments)
     {
         ScoreArray consolidated = new ScoreArray();
         
@@ -854,7 +919,7 @@ public class SearchEngine : IDisposable
     /// <summary>
     /// Calculates the LCS sum value used by coverage.
     /// </summary>
-    private int CalculateLcs(string q, string r, int errorTolerance)
+    private static int CalculateLcs(string q, string r, int errorTolerance)
     {
         // Normalize like the original pipeline (TextNormalizer / ToLowerInvariant)
         string qNorm = q.ToLowerInvariant();
@@ -1043,6 +1108,8 @@ public class SearchEngine : IDisposable
     {
         _rwLock?.Dispose();
         _wordMatcher?.Dispose();
+        _filterCompiler?.Dispose();
+        _filterVM?.Dispose();
     }
     
     /// <summary>
@@ -1051,23 +1118,19 @@ public class SearchEngine : IDisposable
     /// </summary>
     private ScoreEntry[] ApplyFilter(ScoreEntry[] results, Api.Filter filter)
     {
-        // Get or compile bytecode (with caching)
-        if (!_compiledFilterCache.TryGetValue(filter, out var compiled))
-        {
-            compiled = _filterCompiler.Compile(filter);
-            _compiledFilterCache[filter] = compiled;
-        }
+        // Get or compile bytecode (with thread-safe caching)
+        var compiled = _compiledFilterCache.GetOrAdd(filter, f => _filterCompiler.Value!.Compile(f));
         
         // Count total documents matching the filter
         // This needs to be done against ALL documents, not just search results
         if (filter.NumberOfDocumentsInFilter == 0)
         {
             int matchCount = 0;
-            var allDocuments = _vectorModel.Documents.GetAllDocuments();
+            IReadOnlyList<Document> allDocuments = _vectorModel.Documents.GetAllDocuments();
             
-            foreach (var doc in allDocuments)
+            foreach (Document doc in allDocuments)
             {
-                if (_filterVM.Execute(compiled, doc.Fields))
+                if (_filterVM.Value!.Execute(compiled, doc.Fields))
                 {
                     matchCount++;
                 }
@@ -1077,17 +1140,17 @@ public class SearchEngine : IDisposable
         }
         
         // Now filter the search results
-        var filteredResults = new List<ScoreEntry>();
+        List<ScoreEntry> filteredResults = [];
         
-        foreach (var result in results)
+        foreach (ScoreEntry result in results)
         {
             // Get document by public key
-            var doc = _vectorModel.Documents.GetDocumentByPublicKey(result.DocumentId);
+            Document? doc = _vectorModel.Documents.GetDocumentByPublicKey(result.DocumentId);
             if (doc == null)
                 continue;
             
             // Execute bytecode against document
-            if (_filterVM.Execute(compiled, doc.Fields))
+            if (_filterVM.Value!.Execute(compiled, doc.Fields))
             {
                 filteredResults.Add(result);
             }
@@ -1107,20 +1170,15 @@ public class SearchEngine : IDisposable
             return results;
         
         // Compile all boost filters and cache them
-        var compiledBoosts = new List<(CompiledFilter compiled, int strength)>();
+        List<(CompiledFilter compiled, int strength)> compiledBoosts = [];
         
-        foreach (var boost in boosts)
+        foreach (Boost boost in boosts)
         {
             if (boost.Filter == null)
                 continue;
             
-            // Get or compile the boost filter
-            if (!_compiledFilterCache.TryGetValue(boost.Filter, out var compiled))
-            {
-                compiled = _filterCompiler.Compile(boost.Filter);
-                _compiledFilterCache[boost.Filter] = compiled;
-            }
-            
+            // Get or compile the boost filter (thread-safe)
+            var compiled = _compiledFilterCache.GetOrAdd(boost.Filter, f => _filterCompiler.Value!.Compile(f));
             compiledBoosts.Add((compiled, (int)boost.BoostStrength));
         }
         
@@ -1130,8 +1188,8 @@ public class SearchEngine : IDisposable
         // Apply boosts to each result
         for (int i = 0; i < results.Length; i++)
         {
-            var result = results[i];
-            var doc = _vectorModel.Documents.GetDocumentByPublicKey(result.DocumentId);
+            ScoreEntry result = results[i];
+            Document? doc = _vectorModel.Documents.GetDocumentByPublicKey(result.DocumentId);
             
             if (doc == null)
                 continue;
@@ -1139,9 +1197,9 @@ public class SearchEngine : IDisposable
             int totalBoost = 0;
             
             // Check each boost filter
-            foreach (var (compiled, strength) in compiledBoosts)
+            foreach ((CompiledFilter compiled, int strength) in compiledBoosts)
             {
-                if (_filterVM.Execute(compiled, doc.Fields))
+                if (_filterVM.Value!.Execute(compiled, doc.Fields))
                 {
                     totalBoost += strength;
                 }
@@ -1150,7 +1208,7 @@ public class SearchEngine : IDisposable
             // Apply boost to score (clamped to byte range)
             if (totalBoost > 0)
             {
-                var newScore = (byte)Math.Min(255, result.Score + totalBoost);
+                byte newScore = (byte)Math.Min(255, result.Score + totalBoost);
                 results[i] = new ScoreEntry(newScore, result.DocumentId);
             }
         }
@@ -1167,11 +1225,11 @@ public class SearchEngine : IDisposable
     private ScoreEntry[] ApplySort(ScoreEntry[] results, Api.Field sortByField, bool ascending)
     {
         // Extract sort values from documents
-        var withSortKeys = results.Select(r =>
+        (ScoreEntry Entry, object? SortValue)[] withSortKeys = results.Select(r =>
         {
             // DocumentId in ScoreEntry is the public document key
-            var doc = _vectorModel.Documents.GetDocumentByPublicKey(r.DocumentId);
-            var field = doc?.Fields.GetField(sortByField.Name);
+            Document? doc = _vectorModel.Documents.GetDocumentByPublicKey(r.DocumentId);
+            Field? field = doc?.Fields.GetField(sortByField.Name);
             return (Entry: r, SortValue: field?.Value);
         }).ToArray();
         
@@ -1189,8 +1247,14 @@ public class SearchEngine : IDisposable
     /// </summary>
     private static int CompareValues(object? a, object? b)
     {
-        if (a == null && b == null) return 0;
-        if (a == null) return -1;
+        switch (a)
+        {
+            case null when b == null:
+                return 0;
+            case null:
+                return -1;
+        }
+
         if (b == null) return 1;
         
         // Handle numeric types
@@ -1202,24 +1266,6 @@ public class SearchEngine : IDisposable
         // Fallback to string comparison
         return string.Compare(a.ToString(), b.ToString(), StringComparison.Ordinal);
     }
-    }
-
-/// <summary>
-/// Represents search results
-/// </summary>
-public class SearchResult
-{
-    public ScoreEntry[] Results { get; }
-    public int CandidatesProcessed { get; }
-    
-    public SearchResult(ScoreEntry[] results, int candidatesProcessed)
-    {
-        Results = results;
-        CandidatesProcessed = candidatesProcessed;
-    }
-    
-    public override string ToString() => 
-        $"{Results.Length} results (from {CandidatesProcessed} candidates)";
 }
 
 /// <summary>

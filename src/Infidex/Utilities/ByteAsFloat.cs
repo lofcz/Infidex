@@ -12,10 +12,12 @@ internal static class ByteAsFloat
     /// </summary>
     public static byte FloatToByte(float value)
     {
-        if (value <= 0f) return 0;
-        if (value >= 1f) return 255;
-        
-        return (byte)Math.Min(Math.Round(value * 255f), 255);
+        return value switch
+        {
+            <= 0f => 0,
+            >= 1f => 255,
+            _ => (byte)Math.Min(Math.Round(value * 255f), 255)
+        };
     }
     
     /// <summary>
@@ -30,11 +32,6 @@ internal static class ByteAsFloat
     /// Short alias for FloatToByte
     /// </summary>
     public static byte F2B(float value) => FloatToByte(value);
-    
-    /// <summary>
-    /// Short alias for ByteToFloat
-    /// </summary>
-    public static float B2F(byte value) => ByteToFloat(value);
 }
 
 
