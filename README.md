@@ -4,7 +4,7 @@
 
 # Infidex
 
-**A high-performance .NET search engine based of pattern recognition**    
+**The high-performance .NET search engine based on pattern recognition**    
 
 [![Infidex](https://shields.io/nuget/v/Infidex?v=304&icon=nuget&label=Infidex)](https://www.nuget.org/packages/Infidex)
 [![License:MIT](https://img.shields.io/badge/License-MIT-34D058.svg)](https://opensource.org/license/mit)
