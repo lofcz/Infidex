@@ -101,7 +101,7 @@ engine.IndexDocuments(movies);
 
 ## Infiscript
 
-Write intuitive filters that compile to optimized bytecode:
+Infiscript is a simple filtering language used to write intuitive filters that compile to optimized bytecode:
 
 ```csharp
 using Infidex.Api;
@@ -147,6 +147,8 @@ var results = engine.Search(query);
 ```
 
 ### Infiscript Operators
+
+Full EBNF specification is available [here](https://github.com/lofcz/Infidex/blob/master/src/Infidex/Api/Infiscript.bnf).
 
 **Comparison:** `=`, `!=`, `<`, `<=`, `>`, `>=`  
 **Boolean:** `AND` (or `&&`), `OR` (or `||`), `NOT` (or `!`)  
