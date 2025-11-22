@@ -10,14 +10,21 @@
 
     <ItemGroup>
       <PackageReference Include="BenchmarkDotNet" Version="0.15.6" />
+      <PackageReference Include="CsvHelper" Version="33.1.0" />
       <PackageReference Include="IndxSearchLib" Version="4.1.0-beta1" />
       <PackageReference Include="Lucene.Net" Version="4.8.0-beta00017" />
+      <PackageReference Include="Lucene.Net.Analysis.Common" Version="4.8.0-beta00017" />
+      <PackageReference Include="Lucene.Net.QueryParser" Version="4.8.0-beta00017" />
     </ItemGroup>
 
     <ItemGroup>
       <None Update="movies.csv">
         <CopyToOutputDirectory>Always</CopyToOutputDirectory>
       </None>
+    </ItemGroup>
+
+    <ItemGroup>
+      <ProjectReference Include="..\Infidex\Infidex.csproj" />
     </ItemGroup>
 
 </Project>

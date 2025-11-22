@@ -1,9 +1,11 @@
-﻿namespace Infidex.Benchmark;
+﻿using BenchmarkDotNet.Running;
+
+namespace Infidex.Benchmark;
 
 class Program
 {
     static void Main(string[] args)
     {
-        Console.WriteLine("Hello, World!");
+        BenchmarkSwitcher.FromAssembly(typeof(Program).Assembly).Run(args);
     }
 }
