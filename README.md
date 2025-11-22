@@ -276,7 +276,9 @@ var query = new Query("comedy", maxResults: 20)
   - LCS (Longest Common Subsequence) fallback
 - For each query term $q_i$, computes per-term coverage:
 
-$$c_i = \min\left(1, \frac{\text{matched\_chars}_i}{|q_i|}\right)$$
+$$c_i = \min\left(1, \frac{m_i}{|q_i|}\right)$$
+
+where $m_i$ is the number of matched characters for term $i$.
 
 - Derives coordination coverage across all $n$ query terms:
 
