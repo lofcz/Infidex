@@ -172,6 +172,96 @@ public sealed class WordMatcher : IDisposable
         }
         docs.Add(docIndex);
     }
+
+    public void Save(BinaryWriter writer)
+    {
+        // Save Exact Index
+        writer.Write(_exactIndex.Count);
+        foreach (var kvp in _exactIndex)
+        {
+            writer.Write(kvp.Key);
+            writer.Write(kvp.Value.Count);
+            foreach (int docId in kvp.Value)
+            {
+                writer.Write(docId);
+            }
+        }
+
+        // Save LD1 Index
+        writer.Write(_ld1Index.Count);
+        foreach (var kvp in _ld1Index)
+        {
+            writer.Write(kvp.Key);
+            writer.Write(kvp.Value.Count);
+            foreach (int docId in kvp.Value)
+            {
+                writer.Write(docId);
+            }
+        }
+
+        // Save Affix Index presence
+        writer.Write(_affixIndex != null);
+        if (_affixIndex != null)
+        {
+            _affixIndex.Save(writer);
+        }
+    }
+
+    public void Load(BinaryReader reader)
+    {
+        // Load Exact Index
+        int exactCount = reader.ReadInt32();
+        for (int i = 0; i < exactCount; i++)
+        {
+            string key = reader.ReadString();
+            int docCount = reader.ReadInt32();
+            HashSet<int> docs = new HashSet<int>(docCount);
+            for (int j = 0; j < docCount; j++)
+            {
+                docs.Add(reader.ReadInt32());
+            }
+            _exactIndex[key] = docs;
+        }
+
+        // Load LD1 Index
+        int ld1Count = reader.ReadInt32();
+        for (int i = 0; i < ld1Count; i++)
+        {
+            string key = reader.ReadString();
+            int docCount = reader.ReadInt32();
+            HashSet<int> docs = new HashSet<int>(docCount);
+            for (int j = 0; j < docCount; j++)
+            {
+                docs.Add(reader.ReadInt32());
+            }
+            _ld1Index[key] = docs;
+        }
+
+        // Load Affix Index
+        bool hasAffixIndex = reader.ReadBoolean();
+        if (hasAffixIndex && _affixIndex != null)
+        {
+            _affixIndex.Load(reader);
+        }
+        else if (hasAffixIndex && _affixIndex == null)
+        {
+            // Index has affix data but we don't have an affix index set up.
+            // We need to skip the data.
+            // AffixIndex.Save writes Count (int) then for each: String, Count (int), ints...
+            // This is hard to skip without implementing a Skip logic or creating a dummy AffixIndex.
+            // For now, assume setup consistency or read and discard.
+            int count = reader.ReadInt32();
+            for (int i = 0; i < count; i++)
+            {
+                reader.ReadString(); // key
+                int docCount = reader.ReadInt32();
+                for (int j = 0; j < docCount; j++)
+                {
+                    reader.ReadInt32(); // docId
+                }
+            }
+        }
+    }
     
     public void Dispose()
     {

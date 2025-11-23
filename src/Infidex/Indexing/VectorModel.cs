@@ -18,6 +18,8 @@ public class VectorModel
     private readonly int _stopTermLimit;
     private readonly float[] _fieldWeights;
     
+    public Tokenizer Tokenizer => _tokenizer;
+    
     /// <summary>
     /// Event fired when indexing progress changes (0-100%)
     /// </summary>
@@ -373,7 +375,7 @@ public class VectorModel
         await Task.Run(() => Save(filePath));
     }
 
-    private void SaveToStream(BinaryWriter writer)
+    internal void SaveToStream(BinaryWriter writer)
     {
         // Header / Version
         writer.Write("INFIDEX_V1");
@@ -440,7 +442,7 @@ public class VectorModel
         return await Task.Run(() => Load(filePath, tokenizer, stopTermLimit, fieldWeights));
     }
     
-    private void LoadFromStream(BinaryReader reader)
+    internal void LoadFromStream(BinaryReader reader)
     {
         string version = reader.ReadString();
         if (version != "INFIDEX_V1")
@@ -462,6 +464,9 @@ public class VectorModel
             fields.AddField("content", text, Api.Weight.Med, indexable: true);
             
             Document doc = new Document(key, seg, fields, info) { JsonIndex = jsonIdx };
+            // Set IndexedText as it's expected by tests and consumers
+            doc.IndexedText = text;
+            
             Document addedDoc = _documents.AddDocument(doc);
             if (addedDoc.Id != id)
             {

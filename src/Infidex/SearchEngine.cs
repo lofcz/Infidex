@@ -8,6 +8,7 @@ using Infidex.Metrics;
 using Infidex.Internalized.CommunityToolkit;
 using Infidex.Filtering;
 using System.Collections.Concurrent;
+using System.Diagnostics;
 
 namespace Infidex;
 
@@ -366,7 +367,7 @@ public class SearchEngine : IDisposable
                     Document? doc = _vectorModel.Documents.GetDocument(i);
                     if (doc != null && !doc.Deleted)
                     {
-                        allResults.Add(new ScoreEntry(255, doc.DocumentKey)); // Max score for all
+                        allResults.Add(new ScoreEntry(ushort.MaxValue, doc.DocumentKey)); // Max score for all
                     }
                 }
                 
@@ -447,6 +448,19 @@ public class SearchEngine : IDisposable
     /// </summary>
     private ScoreEntry[] PerformSearchInternal(string searchText, CoverageSetup? coverageSetup, int coverageDepth, int maxResults = int.MaxValue)
     {
+        // Optional performance instrumentation (enabled via EnableDebugLogging)
+        Stopwatch? perfStopwatch = null;
+        long tfidfMs = 0;
+        long topKMs = 0;
+        long wordMatcherCoverageMs = 0;
+        long tfidfCoverageMs = 0;
+        long truncationMs = 0;
+
+        if (EnableDebugLogging)
+        {
+            perfStopwatch = Stopwatch.StartNew();
+        }
+
         if (string.IsNullOrWhiteSpace(searchText))
             return [];
 
@@ -468,7 +482,12 @@ public class SearchEngine : IDisposable
         {
             // STAGE 1: Relevancy Ranking (TF-IDF Vector Space) with segment tracking
             _vectorModel.EnableDebugLogging = EnableDebugLogging;
+            long tfidfStart = perfStopwatch?.ElapsedMilliseconds ?? 0;
             ScoreArray relevancyScores = _vectorModel.Search(searchText, bestSegments, queryIndex: 0);
+            if (perfStopwatch != null)
+            {
+                tfidfMs = perfStopwatch.ElapsedMilliseconds - tfidfStart;
+            }
 
             if (EnableDebugLogging)
             {
@@ -488,19 +507,30 @@ public class SearchEngine : IDisposable
             }
             
             // STAGE 2: Coverage (Lexical Matching) - matches original exactly
+            long topKStart = perfStopwatch?.ElapsedMilliseconds ?? 0;
             ScoreEntry[] topCandidates = relevancyScores.GetTopK(coverageDepth);
+            if (perfStopwatch != null)
+            {
+                topKMs = perfStopwatch.ElapsedMilliseconds - topKStart;
+            }
 
-                if (EnableDebugLogging)
+            // Optional lexical pre-screen before full coverage
+            if (coverageSetup != null && coverageSetup.EnableLexicalPrescreen && topCandidates.Length > 0)
+            {
+                topCandidates = ApplyLexicalPrescreen(searchText, topCandidates);
+            }
+
+            if (EnableDebugLogging)
+            {
+                Console.WriteLine($"[DEBUG] Stage2 Coverage: depth={coverageDepth}, top TF-IDF candidates (after prescreen={coverageSetup?.EnableLexicalPrescreen == true}):");
+                foreach (ScoreEntry c in topCandidates)
                 {
-                    Console.WriteLine($"[DEBUG] Stage2 Coverage: depth={coverageDepth}, top TF-IDF candidates:");
-                    foreach (ScoreEntry c in topCandidates)
-                    {
-                        Console.WriteLine($"  [DEBUG]   top TF-IDF docKey={c.DocumentId}, score={c.Score}");
-                    }
+                    Console.WriteLine($"  [DEBUG]   top TF-IDF docKey={c.DocumentId}, score={c.Score}");
                 }
+            }
 
-                // --- Build WordMatcher candidate set (internal indices) ---
-                HashSet<int> wordMatcherInternalIds = LookupFuzzyWords(searchText);
+            // --- Build WordMatcher candidate set (internal indices) ---
+            HashSet<int> wordMatcherInternalIds = LookupFuzzyWords(searchText);
 
                 if (EnableDebugLogging && wordMatcherInternalIds.Count > 0)
                 {
@@ -546,6 +576,7 @@ public class SearchEngine : IDisposable
                     int maxWordHits = 0;
 
                     // --- Coverage for WordMatcher hits (isFromWordMatcher = true) ---
+                    long wmCoverageStart = perfStopwatch?.ElapsedMilliseconds ?? 0;
                     foreach (int internalId in wordMatcherInternalIds)
                     {
                         Document? doc = _vectorModel.Documents.GetDocument(internalId);
@@ -575,13 +606,14 @@ public class SearchEngine : IDisposable
                             }
                         }
 
-                        CoverageSummary coverageSummary = _coverageEngine.CalculateCoverageSummary(
+                        // FAST PATH: Use optimized CalculateRankedScore
+                        ushort finalScore = _coverageEngine.CalculateRankedScore(
                             searchText,
                             docText,
-                            lcsFromSpan);
-
-                        byte coverageScore = coverageSummary.AggregateScore;
-                        int wordHits = coverageSummary.TotalWordHits;
+                            lcsFromSpan,
+                            (byte)0, // WordMatcher results have no base TF-IDF score (use 0)
+                            out int wordHits
+                        );
 
                         if (docIndex < lcsAndWordHitsSpan.Height && lcsAndWordHitsSpan[1, docIndex] == 0)
                         {
@@ -589,22 +621,21 @@ public class SearchEngine : IDisposable
                         }
 
                         maxWordHits = Math.Max(maxWordHits, wordHits);
-                        
-                        // Score fusion: from word matcher we always use coverage score
-                        byte finalScore = coverageScore;
 
                         if (EnableDebugLogging)
                         {
-                            Console.WriteLine(
-                                $"[DEBUG] Coverage (WordMatcher): docKey={doc.DocumentKey}, " +
-                                $"coverage={coverageScore}, wordHits={wordHits}, lcsFromSpan={lcsFromSpan}, " +
-                                $"finalScore={finalScore}");
+                            Console.WriteLine($"[DEBUG] Coverage (WordMatcher Fast): docKey={doc.DocumentKey}, final={finalScore}");
                         }
 
                         finalScores.Add(doc.DocumentKey, finalScore);
                     }
+                    if (perfStopwatch != null)
+                    {
+                        wordMatcherCoverageMs = perfStopwatch.ElapsedMilliseconds - wmCoverageStart;
+                    }
 
                     // --- Coverage for TF-IDF candidates (isFromWordMatcher = false) ---
+                    long tfidfCoverageStart = perfStopwatch?.ElapsedMilliseconds ?? 0;
                     foreach (ScoreEntry candidate in topCandidates)
                     {
                         Document? doc = _vectorModel.Documents.GetDocumentByPublicKey(candidate.DocumentId);
@@ -634,23 +665,14 @@ public class SearchEngine : IDisposable
                             }
                         }
 
-                        CoverageSummary coverageSummary = _coverageEngine.CalculateCoverageSummary(
+                        // FAST PATH: Use optimized CalculateRankedScore
+                        ushort finalScore = _coverageEngine.CalculateRankedScore(
                             searchText,
                             docText,
-                            lcsFromSpan);
-
-                        byte coverageScore = coverageSummary.AggregateScore;
-                        int wordHits = coverageSummary.TotalWordHits;
-
-                        if (EnableDebugLogging)
-                        {
-                            string docPreview = docText.Length > 50 ? docText.Substring(0, 50) + "..." : docText;
-                            Console.WriteLine($"[COV-SUMMARY] doc=\"{docPreview}\", query=\"{searchText}\"");
-                            foreach (TermCoverageInfo term in coverageSummary.Terms)
-                            {
-                                Console.WriteLine($"  Term: \"{term.QueryWord}\", MaxChars={term.MaxChars}, MatchedChars={term.MatchedChars}");
-                            }
-                        }
+                            lcsFromSpan,
+                            (byte)candidate.Score, // Base TF-IDF score
+                            out int wordHits
+                        );
 
                         if (docIndex < lcsAndWordHitsSpan.Height && lcsAndWordHitsSpan[1, docIndex] == 0)
                         {
@@ -659,56 +681,16 @@ public class SearchEngine : IDisposable
 
                         maxWordHits = Math.Max(maxWordHits, wordHits);
                         
-                        // Score fusion: (!isFromWordMatcher && coverage <= relevancy) ? relevancy : coverage
-                        byte baseScore = coverageScore <= candidate.Score
-                            ? candidate.Score
-                            : coverageScore;
-
-                        // Generic scoring model combining:
-                        // Q = baseScore / 255 in [0,1]  -> overall match quality (TF-IDF / coverage)
-                        // C_coord = per-term coverage coordination factor in [0,1]:
-                        //   C_coord = (1 / n) * sum_i c_i,  c_i = min(1, matchedChars_i / |q_i|)
-                        //
-                        // We encode lexicographic preference (C_coord first, Q second) into a single byte:
-                        //  - High 6 bits: coverage tier  (0-63)
-                        //  - Low  2 bits: quality tier   (0-3)
-                        //
-                        // This guarantees that any document with strictly higher coverage tier
-                        // will outrank one with lower coverage, regardless of Q, while still
-                        // allowing Q to break ties within the same coverage tier.
-                        
-                        float Q = baseScore / 255f;
-
-                        float coordCoverage = 0f;
-                        if (coverageSummary.Terms.Count > 0)
-                        {
-                            float sumCi = 0f;
-                            foreach (TermCoverageInfo termInfo in coverageSummary.Terms)
-                            {
-                                if (termInfo.MaxChars <= 0)
-                                    continue;
-                                
-                                float ci = (float)Math.Min(1.0, termInfo.MatchedChars / termInfo.MaxChars);
-                                sumCi += ci;
-                            }
-
-                            coordCoverage = sumCi / coverageSummary.Terms.Count;
-                        }
-
-                        int coverageTier = (int)Math.Clamp(coordCoverage * 63f, 0f, 63f);
-                        int qualityTier = (int)Math.Clamp(Q * 3f, 0f, 3f);
-
-                        byte finalScore = (byte)((coverageTier << 2) | qualityTier);
-
                         if (EnableDebugLogging)
                         {
-                            Console.WriteLine(
-                                $"[DEBUG] Coverage (TF-IDF): docKey={doc.DocumentKey}, relevancy={candidate.Score}, " +
-                                $"coverage={coverageScore}, wordHits={wordHits}, " +
-                                $"Q={Q:F3}, coordCoverage={coordCoverage:F3}, finalScore={finalScore}");
+                            Console.WriteLine($"[DEBUG] Coverage (TF-IDF Fast): docKey={doc.DocumentKey}, final={finalScore}");
                         }
 
                         finalScores.Add(doc.DocumentKey, finalScore);
+                    }
+                    if (perfStopwatch != null)
+                    {
+                        tfidfCoverageMs = perfStopwatch.ElapsedMilliseconds - tfidfCoverageStart;
                     }
 
                     // If there is no lexical evidence at all (no word hits and no WordMatcher hits),
@@ -731,11 +713,16 @@ public class SearchEngine : IDisposable
                     int truncationIndex = -1;
                     if (coverageSetup != null && coverageSetup.Truncate && finalResults.Length > 0)
                     {
+                        long truncStart = perfStopwatch?.ElapsedMilliseconds ?? 0;
                         truncationIndex = CalculateTruncationIndex(
                             finalResults,
                             maxWordHits,
                             lcsAndWordHitsSpan,
                             documentKeyToIndex);
+                        if (perfStopwatch != null)
+                        {
+                            truncationMs = perfStopwatch.ElapsedMilliseconds - truncStart;
+                        }
 
                         if (EnableDebugLogging)
                         {
@@ -766,6 +753,15 @@ public class SearchEngine : IDisposable
                         foreach (ScoreEntry r in finalResults)
                         {
                             Console.WriteLine($"  [DEBUG]   docKey={r.DocumentId}, score={r.Score}");
+                        }
+
+                        if (perfStopwatch != null)
+                        {
+                            Console.WriteLine(
+                                $"[PERF] total={perfStopwatch.ElapsedMilliseconds}ms, " +
+                                $"tfidf={tfidfMs}ms, topK={topKMs}ms, " +
+                                $"wmCoverage={wordMatcherCoverageMs}ms, " +
+                                $"tfidfCoverage={tfidfCoverageMs}ms, truncation={truncationMs}ms");
                         }
                     }
                     
@@ -817,6 +813,69 @@ public class SearchEngine : IDisposable
     }
     
     /// <summary>
+    /// Lightweight lexical pre-screen on TF-IDF candidates, used to drop
+    /// documents that only match extremely common query terms before running
+    /// the full coverage pipeline. This implementation is intentionally
+    /// conservative to avoid impacting fuzzy/typo behavior: it only acts when
+    /// all query tokens are known in the index (i.e. no obvious typos) and
+    /// requires that candidates contain at least one query token as a plain
+    /// substring in the indexed text.
+    /// </summary>
+    private ScoreEntry[] ApplyLexicalPrescreen(string searchText, ScoreEntry[] candidates)
+    {
+        // Get query tokens using the same tokenizer configuration as coverage
+        string[] queryTokens = _vectorModel.Tokenizer
+            .GetWordTokensForCoverage(searchText, _coverageSetup?.MinWordSize ?? 2)
+            .ToArray();
+
+        if (queryTokens.Length == 0)
+            return candidates;
+
+        // If any token is not present in the index at all (df == 0) we treat
+        // this as a potential typo/fuzzy case and completely disable
+        // pre-screening to avoid dropping fuzzy matches.
+        foreach (string token in queryTokens)
+        {
+            Term? term = _vectorModel.TermCollection.GetTerm(token);
+            if (term == null || term.DocumentFrequency == 0)
+            {
+                return candidates;
+            }
+        }
+
+        List<ScoreEntry> filtered = new List<ScoreEntry>(candidates.Length);
+
+        foreach (ScoreEntry candidate in candidates)
+        {
+            Document? doc = _vectorModel.Documents.GetDocumentByPublicKey(candidate.DocumentId);
+            if (doc == null || doc.Deleted)
+                continue;
+
+            string text = doc.IndexedText;
+            bool hasAnyToken = false;
+
+            foreach (string token in queryTokens)
+            {
+                if (token.Length == 0)
+                    continue;
+
+                if (text.IndexOf(token, StringComparison.OrdinalIgnoreCase) >= 0)
+                {
+                    hasAnyToken = true;
+                    break;
+                }
+            }
+
+            if (hasAnyToken)
+            {
+                filtered.Add(candidate);
+            }
+        }
+
+        return filtered.Count == 0 ? candidates : filtered.ToArray();
+    }
+    
+    /// <summary>
     /// Consolidates segment scores to return only the best-scoring segment per DocumentKey
     /// </summary>
     private static ScoreArray ConsolidateSegments(ScoreArray scores, Span2D<byte> bestSegments)
@@ -824,7 +883,7 @@ public class SearchEngine : IDisposable
         ScoreArray consolidated = new ScoreArray();
         
         // Group all scores by DocumentKey and keep only the highest score per key
-        Dictionary<long, byte> scoresByKey = new Dictionary<long, byte>();
+        Dictionary<long, ushort> scoresByKey = new Dictionary<long, ushort>();
         
         foreach (ScoreEntry entry in scores.GetAll())
         {
@@ -845,7 +904,7 @@ public class SearchEngine : IDisposable
         }
         
         // Add deduplicated results to consolidated array
-        foreach (KeyValuePair<long, byte> kvp in scoresByKey)
+        foreach (KeyValuePair<long, ushort> kvp in scoresByKey)
         {
             consolidated.Add(kvp.Key, kvp.Value);
         }
@@ -1004,7 +1063,17 @@ public class SearchEngine : IDisposable
         _rwLock.EnterWriteLock();
         try
         {
-            _vectorModel.Save(filePath);
+            using FileStream stream = File.Create(filePath);
+            using BinaryWriter writer = new BinaryWriter(stream);
+            
+            _vectorModel.SaveToStream(writer);
+            
+            // Save WordMatcher if present
+            writer.Write(_wordMatcher != null);
+            if (_wordMatcher != null)
+            {
+                _wordMatcher.Save(writer);
+            }
         }
         finally
         {
@@ -1038,9 +1107,36 @@ public class SearchEngine : IDisposable
             textNormalizer,
             tokenizerSetup);
             
-        VectorModel vectorModel = VectorModel.Load(filePath, tokenizer, stopTermLimit, fieldWeights);
+        VectorModel vectorModel = new VectorModel(tokenizer, stopTermLimit, fieldWeights);
         
-        return new SearchEngine(vectorModel, enableCoverage, coverageSetup, tokenizerSetup, wordMatcherSetup);
+        SearchEngine engine = new SearchEngine(vectorModel, enableCoverage, coverageSetup, tokenizerSetup, wordMatcherSetup);
+        
+        using (FileStream stream = File.OpenRead(filePath))
+        using (BinaryReader reader = new BinaryReader(stream))
+        {
+            vectorModel.LoadFromStream(reader);
+            
+            bool hasWordMatcher = reader.ReadBoolean();
+            if (hasWordMatcher && engine._wordMatcher != null)
+            {
+                engine._wordMatcher.Load(reader);
+            }
+            else if (hasWordMatcher && engine._wordMatcher == null)
+            {
+                // File has WordMatcher data but engine configured without it.
+                // We should skip the data to avoid stream corruption or errors,
+                // but since we can't easily skip without loading, we'll just
+                // throw or warn. For internal tool, let's just throw.
+                throw new InvalidOperationException("Index contains WordMatcher data but engine is configured without it.");
+            }
+            else if (!hasWordMatcher && engine._wordMatcher != null)
+            {
+                 // File missing WordMatcher data but engine expects it.
+                 throw new InvalidDataException("Index file is missing required WordMatcher data (legacy format not supported).");
+            }
+        }
+        
+        return engine;
     }
 
     /// <summary>
@@ -1060,22 +1156,7 @@ public class SearchEngine : IDisposable
         float[]? fieldWeights = null,
         CancellationToken cancellationToken = default)
     {
-        return await Task.Run(async () => 
-        {
-            textNormalizer ??= TextNormalizer.CreateDefault();
-            tokenizerSetup ??= TokenizerSetup.CreateDefault();
-            
-            Tokenizer tokenizer = new Tokenizer(
-                indexSizes,
-                startPadSize,
-                stopPadSize,
-                textNormalizer,
-                tokenizerSetup);
-                
-            VectorModel vectorModel = await VectorModel.LoadAsync(filePath, tokenizer, stopTermLimit, fieldWeights);
-            
-            return new SearchEngine(vectorModel, enableCoverage, coverageSetup, tokenizerSetup, wordMatcherSetup);
-        }, cancellationToken);
+        return await Task.Run(() => Load(filePath, indexSizes, startPadSize, stopPadSize, enableCoverage, textNormalizer, tokenizerSetup, coverageSetup, stopTermLimit, wordMatcherSetup, fieldWeights));
     }
 
     private SearchEngine(
@@ -1091,16 +1172,14 @@ public class SearchEngine : IDisposable
         if (enableCoverage)
         {
             _coverageSetup = coverageSetup ?? CoverageSetup.CreateDefault();
+            // Fix: Initialize CoverageEngine using the tokenizer from VectorModel
+            _coverageEngine = new CoverageEngine(_vectorModel.Tokenizer, _coverageSetup);
         }
         
         if (wordMatcherSetup != null && tokenizerSetup != null)
         {
             _wordMatcher = new WordMatcher.WordMatcher(wordMatcherSetup, tokenizerSetup.Delimiters);
-            // Populate WordMatcher from loaded documents
-            foreach (Document doc in _vectorModel.Documents.GetAllDocuments())
-            {
-                _wordMatcher.Load(doc.IndexedText, doc.Id);
-            }
+            // WordMatcher population is now handled by the Load method (either loading from disk or rebuilding)
         }
     }
 
@@ -1205,10 +1284,10 @@ public class SearchEngine : IDisposable
                 }
             }
             
-            // Apply boost to score (clamped to byte range)
+            // Apply boost to score (clamped to ushort range)
             if (totalBoost > 0)
             {
-                byte newScore = (byte)Math.Min(255, result.Score + totalBoost);
+                ushort newScore = (ushort)Math.Min(65535, result.Score + totalBoost);
                 results[i] = new ScoreEntry(newScore, result.DocumentId);
             }
         }

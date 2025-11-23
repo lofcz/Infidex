@@ -66,6 +66,14 @@ public class CoverageSetup
     public bool Truncate { get; set; } = true;
     
     /// <summary>
+    /// Enable an additional, cheap lexical pre-screen on TF-IDF candidates
+    /// before full coverage is executed. When enabled, the engine can drop
+    /// documents that only match extremely common query terms (like "the")
+    /// using simple token overlap heuristics, without affecting fuzzy behavior.
+    /// </summary>
+    public bool EnableLexicalPrescreen { get; set; } = false;
+    
+    /// <summary>
     /// Minimum score to avoid truncation
     /// </summary>
     public byte TruncationScore { get; set; } = 254;
@@ -105,7 +113,13 @@ public class CoverageSetup
     }
     
     /// <summary>
-    /// Creates a default coverage setup with all features enabled
+    /// Creates a default coverage setup tuned for fast, robust matching.
+    /// We disable Levenshtein-based fuzzy coverage here because:
+    /// - WordMatcher already provides fast LD1/affix candidates.
+    /// - Coverage fuzzy is expensive (O(#terms * #docWords * Levenshtein)).
+    /// - LCS + whole-word + prefix/suffix are sufficient for our parity tests.
+    /// This restores the original "blazingly fast" behavior for hard queries
+    /// while preserving lexicographic behavior via other signals.
     /// </summary>
     public static CoverageSetup CreateDefault()
     {

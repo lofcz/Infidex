@@ -11,3 +11,5 @@ reference
 test-output.txt
 src/Infidex/output.txt
 nupkgs
+/tools
+/src/Infidex.Demo
