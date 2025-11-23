@@ -290,12 +290,25 @@ $$C_{\text{coord}} = \frac{1}{n} \sum_{i=1}^{n} c_i$$
 
 **Stage 3: Lexicographic Score Fusion**
 - Let $Q \in [0,1]$ be the normalized match quality (max of TF-IDF and coverage scores)
-- Uses **lexicographic ordering** $(C_{\text{coord}}, Q)$:
-  - Documents matching more query terms **always** outrank those matching fewer
-  - Within the same coverage tier, TF-IDF quality $Q$ breaks ties
-- Final score encoded as:
+- Uses **lexicographic ordering** $(C_{\text{coord}}, \text{Prec}, Q)$:
+  1. **Coverage Tier**: Documents matching more query terms **always** outrank those matching fewer.
+  2. **Precedence Bitmask**: Context-aware signal strength model breaks ties within coverage tiers.
+     - **Bit 7 (128)**: All Terms Found
+     - **Bit 6 (64)**: All Terms Fully Matched (Whole OR Exact Prefix)
+     - **Bit 5 (32)**: Strict Whole Word (for single-term) / Perfect Doc (for multi-term)
+     - **Bit 4 (16)**: Perfect Doc (for single-term) / Strict Whole Word (for multi-term)
+     - **Bit 3 (8)**: First Match at Index 0 (Starts with query)
+     - **Bit 2 (4)**: Precise Prefix Match (Start of Token)
+  3. **Quality Score**: TF-IDF quality $Q$ breaks remaining ties.
 
-$$\text{score} = (\lfloor C_{\text{coord}} \times 63 \rfloor \ll 2) \mid \lfloor Q \times 3 \rfloor$$
+- Final score encoded as a `ushort` (16-bit):
+
+$$\text{score} = (\text{Prec} \ll 8) \mid ((\lfloor C_{\text{coord}} \times 63 \rfloor \ll 2) \mid \lfloor Q \times 3 \rfloor)$$
+
+This ensures a deterministic ranking where:
+1. Completeness rules (Coverage)
+2. Signal strength refines (Precedence)
+3. Textual similarity differentiates (Quality)
 
 
 ## Persistence
