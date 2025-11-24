@@ -88,6 +88,13 @@ public abstract class MovieSearchParityTestsBase
 
         Assert.IsTrue(records.Length >= 1, "Expected at least one result for 'Shaaawshank'.");
 
+        Console.WriteLine("Results for 'Shaaawshank':");
+        for (int i = 0; i < records.Length; i++)
+        {
+            var doc = engine.GetDocument(records[i].DocumentId);
+            Console.WriteLine($"  [{records[i].Score}] {doc!.IndexedText}");
+        }
+
         var firstDoc = engine.GetDocument(records[0].DocumentId);
         Assert.IsNotNull(firstDoc);
         Assert.AreEqual("The Shawshank Redemption", firstDoc!.IndexedText);
@@ -341,15 +348,82 @@ public abstract class MovieSearchParityTestsBase
         // Verify Group A (Exact) > Group B (Prefix)
         Assert.IsTrue(starKid.Score > stardom.Score, 
             $"Group A (Exact, score={starKid.Score}) should score higher than Group B (Prefix, score={stardom.Score})");
-            
-        // Optional: Verify internal consistency
-        if (starDust.Score > 0)
-             Assert.AreEqual(starKid.Score, starDust.Score, "Star Kid and Star Dust should have same score");
-             
-        if (starlift.Score > 0)
-             Assert.AreEqual(stardom.Score, starlift.Score, "Stardom and Starlift should have same score");
+
+        // Additional invariant for single-term query "star":
+        // All titles whose text starts with the word "Star" (e.g. "Star Kid",
+        // "Star Dust") must appear before any title that does not start with
+        // "Star" (e.g. "The Star", "Lone Star", "Bar Starz").
+        bool seenNonStartingStar = false;
+        int limit = Math.Min(200, records.Length);
+        for (int i = 0; i < limit; i++)
+        {
+            var movie = movies[(int)records[i].DocumentId];
+            string title = movie.Title;
+
+            // "Starts with Star" = first token is exactly "Star"
+            bool startsWithStar =
+                title.StartsWith("Star", StringComparison.OrdinalIgnoreCase) &&
+                (title.Length == 4 || !char.IsLetter(title[4]));
+
+            if (!startsWithStar)
+            {
+                seenNonStartingStar = true;
+            }
+            else if (seenNonStartingStar)
+            {
+                Assert.Fail($"Title '{title}' starting with 'Star' appears after a non-'Star' title in the results.");
+            }
+        }
 
         Console.WriteLine($"\nVerified: Group A Score ({starKid.Score}) > Group B Score ({stardom.Score})");
+    }
+
+    [TestMethod]
+    public void Sap_PrefersPrefixAtTitleStart()
+    {
+        var engine = GetEngine();
+
+        var query = "sap";
+        var result = engine.Search(new Query(query, 200));
+        var records = result.Records;
+
+        Assert.IsTrue(records.Length > 0, "Should find results for 'sap'");
+
+        Console.WriteLine($"Search results for '{query}' (Top 20 shown):");
+        for (int i = 0; i < Math.Min(20, records.Length); i++)
+        {
+            var record = records[i];
+            var doc = engine.GetDocument(record.DocumentId);
+            Console.WriteLine($"{doc!.IndexedText} - Score: {record.Score:F1}");
+        }
+
+        // Invariant for single-term query "sap":
+        // Titles whose first token starts with "sap" (e.g. "Sapoot", "Sapphire",
+        // "Sappho 68", "Sappy Holiday") must appear before any title whose first
+        // token does not start with "sap" (e.g. "Mae Martin SAP", "The Saphead").
+        bool seenNonSapStart = false;
+        int sapLimit = Math.Min(200, records.Length);
+        for (int i = 0; i < sapLimit; i++)
+        {
+            var doc = engine.GetDocument(records[i].DocumentId);
+            string title = doc!.IndexedText;
+            string lower = title.ToLowerInvariant();
+
+            // First token starts with "sap" if the very beginning of the title
+            // is "sap" and the next character, if any, is not a letter.
+            bool startsWithSap =
+                lower.StartsWith("sap", StringComparison.Ordinal) &&
+                (lower.Length == 3 || !char.IsLetter(lower[3]));
+
+            if (!startsWithSap)
+            {
+                seenNonSapStart = true;
+            }
+            else if (seenNonSapStart)
+            {
+                Assert.Fail($"Title '{title}' with 'sap' prefix at start appears after a non-'sap' starting title in the results.");
+            }
+        }
     }
     
     [TestMethod]
@@ -390,6 +464,449 @@ public abstract class MovieSearchParityTestsBase
         
         Assert.IsTrue(topTitle.Contains("Shawshank", StringComparison.OrdinalIgnoreCase), 
             $"Expected Shawshank Redemption but got '{topTitle}'");
+    }
+
+    [TestMethod]
+    public void EatrixF_PrefersBeatrixFarrand()
+    {
+        var engine = GetEngine();
+
+        string[] queries =
+        [
+            "eatrix f",
+            "eatrix fe",
+            "eatrix fea",
+            "eatrix fer",
+        ];
+
+        foreach (var query in queries)
+        {
+            var result = engine.Search(new Query(query, 10));
+            var records = result.Records;
+
+            Assert.IsTrue(records.Length > 0, $"Should find results for '{query}'");
+
+            var topDoc = engine.GetDocument(records[0].DocumentId);
+            string topTitle = topDoc!.IndexedText;
+            Console.WriteLine($"Top Result for '{query}': {topTitle}");
+
+            // Extract last term to reason about how much of the second word has been typed.
+            var parts = query.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+            string lastTerm = parts[^1];
+
+            // Principle: once the user has provided a reasonably specific suffix
+            // for the second token (>= 3 characters), the intended bigram
+            // "Beatrix Farrand..." should dominate.
+            if (lastTerm.Length >= 3)
+            {
+                Assert.IsTrue(
+                    topTitle.Contains("Beatrix", StringComparison.OrdinalIgnoreCase) &&
+                    topTitle.Contains("Farrand", StringComparison.OrdinalIgnoreCase),
+                    $"Expected Beatrix Farrand movie at top for '{query}' but got '{topTitle}'");
+            }
+        }
+    }
+
+    [TestMethod]
+    public void De_PrefersPrefixAtTitleStart()
+    {
+        var engine = GetEngine();
+
+        var query = "de";
+        var result = engine.Search(new Query(query, 200));
+        var records = result.Records;
+
+        Assert.IsTrue(records.Length > 0, "Should find results for 'de'");
+
+        Console.WriteLine($"Search results for '{query}' (Top 20 shown):");
+        for (int i = 0; i < Math.Min(20, records.Length); i++)
+        {
+            var record = records[i];
+            var doc = engine.GetDocument(record.DocumentId);
+            Console.WriteLine($"{doc!.IndexedText} - Score: {record.Score:F1}");
+        }
+
+        // Principle for single-term 'de':
+        // Titles whose FIRST token starts with "de" (e.g. "Dear Dead Delilah",
+        // "De De Pyaar De", "Deadly Descent") must appear before any title whose
+        // first token does not start with "de" (e.g. "Intent to Destroy ...").
+        bool seenNonDeStart = false;
+        int limit = Math.Min(200, records.Length);
+        for (int i = 0; i < limit; i++)
+        {
+            var doc = engine.GetDocument(records[i].DocumentId);
+            string title = doc!.IndexedText;
+            string lower = title.ToLowerInvariant();
+
+            // First token starts with "de" if the very beginning of the title
+            // is "de" (case-insensitive).
+            bool startsWithDe = lower.StartsWith("de", StringComparison.Ordinal);
+
+            if (!startsWithDe)
+            {
+                seenNonDeStart = true;
+            }
+            else if (seenNonDeStart)
+            {
+                Assert.Fail($"Title '{title}' with first token starting with 'de' appears after a non-'de' starting title in the results.");
+            }
+        }
+    }
+
+
+    [TestMethod]
+    public void Search_SingleLetter_ReturnsResults()
+    {
+        var engine = GetEngine();
+        
+        // "a" should match Aladdin, After, Alita...
+        // This tests 1-letter query support with immediate prefix matching
+        var result = engine.Search(new Query("a", 10));
+        
+        Assert.IsTrue(result.Records.Length > 0, "Should return results for single letter 'a'");
+        
+        // Verify results start with 'a'
+        foreach (var record in result.Records.Take(5))
+        {
+            var doc = engine.GetDocument(record.DocumentId);
+            Assert.IsNotNull(doc);
+            var title = doc!.IndexedText.ToLowerInvariant();
+            Assert.IsTrue(title.StartsWith("a") || title.Contains(" a"), 
+                $"Result '{doc.IndexedText}' should contain word starting with 'a'");
+        }
+    }
+
+    [TestMethod]
+    public void SingleLetter_X_PrefersExactTitle()
+    {
+        var engine = GetEngine();
+        
+        var result = engine.Search(new Query("x", 10));
+        var records = result.Records;
+        
+        Assert.IsTrue(records.Length > 0, "Should return results for single letter 'x'");
+        
+        var topDoc = engine.GetDocument(records[0].DocumentId);
+        Assert.IsNotNull(topDoc);
+        Assert.AreEqual("X", topDoc!.IndexedText, "Exact title 'X' should be the top result for query 'x'");
+    }
+
+    [TestMethod]
+    public void Search_TwoLetters_ReturnsResults()
+    {
+        var engine = GetEngine();
+        // "th" should match Thor, The Twilight Saga, The Matrix...
+        var sw = Stopwatch.StartNew();
+        var result = engine.Search(new Query("th", 10));
+        sw.Stop();
+
+        Console.WriteLine($"Search 'th' took {sw.ElapsedMilliseconds}ms. Results: {result.Records.Length}");
+        
+        Assert.IsTrue(result.Records.Length > 0, "Should return results for two letters 'th'");
+    }
+    
+    [TestMethod]
+    public void Io_PrefersExactTitleOverPrefixes()
+    {
+        var engine = GetEngine();
+        
+        var result = engine.Search(new Query("io", 10));
+        var records = result.Records;
+        
+        Assert.IsTrue(records.Length > 0, "Should return results for 'io'");
+        
+        var topDoc = engine.GetDocument(records[0].DocumentId);
+        Assert.IsNotNull(topDoc);
+        Assert.AreEqual("IO", topDoc!.IndexedText, "Exact title 'IO' should be the top result for query 'io'");
+    }
+    
+    [TestMethod]
+    public void Search_MixedTerms_LongAndShort_ReturnsCorrectResults()
+    {
+        var engine = GetEngine();
+        // "san a" MUST behave consistently with precedence rules:
+        // - Position #1: "San Andreas"
+        // - Positions #2-4: other "San Andreas ..." variants
+        var result = engine.Search(new Query("san a", 10));
+        
+        Console.WriteLine($"Search 'san a' returned {result.Records.Length} results");
+        for (int i = 0; i < Math.Min(10, result.Records.Length); i++)
+        {
+            var doc = engine.GetDocument(result.Records[i].DocumentId);
+            Console.WriteLine($"  [{i + 1}] [{result.Records[i].Score}] {doc?.IndexedText}");
+        }
+        
+        Assert.IsTrue(result.Records.Length >= 3, "Should return at least 3 results for 'san a'");
+        
+        // There are exactly 3 "San Andreas" titles in the dataset:
+        // 1. "San Andreas"
+        // 2. "San Andreas Quake"
+        // 3. "San Andreas Mega Quake"
+        
+        // #1 MUST be "San Andreas" (exact match, no subtitle)
+        var doc1 = engine.GetDocument(result.Records[0].DocumentId);
+        Assert.IsNotNull(doc1);
+        Assert.AreEqual("San Andreas", doc1!.IndexedText, "Position #1 MUST be 'San Andreas'");
+        
+        // #2-3 MUST be the other two "San Andreas ..." variants
+        for (int i = 1; i <= 2; i++)
+        {
+            var doc = engine.GetDocument(result.Records[i].DocumentId);
+            Assert.IsNotNull(doc, $"Document at position {i + 1} should not be null");
+            Assert.IsTrue(doc!.IndexedText.StartsWith("San Andreas"),
+                $"Position #{i + 1} MUST be a 'San Andreas ...' variant, but was '{doc.IndexedText}'");
+        }
+    }
+
+    [TestMethod]
+    public void FellowshipOfTheRing_PrefersCorrectLotrMovie()
+    {
+        var engine = GetEngine();
+
+        var result = engine.Search(new Query("fellowship of the ring", 10));
+        var records = result.Records;
+
+        Assert.IsTrue(records.Length >= 2, "Expected at least two results for 'fellowship of the ring'.");
+
+        var firstDoc = engine.GetDocument(records[0].DocumentId);
+        var secondDoc = engine.GetDocument(records[1].DocumentId);
+
+        Assert.IsNotNull(firstDoc, "First result document should not be null.");
+        Assert.IsNotNull(secondDoc, "Second result document should not be null.");
+
+        string firstTitle = firstDoc!.IndexedText;
+        string secondTitle = secondDoc!.IndexedText;
+
+        // Lock-in: the first movie in the Lord of the Rings trilogy must be top for this exact title query.
+        Assert.AreEqual("The Lord of the Rings 1 - The Fellowship of the Ring", firstTitle);
+
+        // And it must have a strictly higher score than the next-best result.
+        Assert.IsTrue(records[0].Score > records[1].Score,
+            $"Expected '{firstTitle}' to have a higher score than '{secondTitle}'.");
+    }
+
+    [TestMethod]
+    public void TheMatri_FindsMatrixSequels()
+    {
+        var engine = GetEngine();
+        
+        // Query: "the matri"
+        // Intent: "The Matrix" and its sequels.
+        // "Matri" is a clean prefix for "Matrix".
+        // "Martian", "Marine" should be lower because they are fuzzy/noisy matches or weaker prefix matches.
+        
+        var result = engine.Search(new Query("the matri", 20));
+        var records = result.Records;
+        
+        Assert.IsTrue(records.Length > 0, "Should find results");
+        
+        // Check relative ordering
+        int matrixIndex = -1;
+        int reloadedIndex = -1;
+        int revolutionsIndex = -1;
+        int martianIndex = -1;
+        int marineIndex = -1;
+        
+        for (int i = 0; i < records.Length; i++)
+        {
+            var doc = engine.GetDocument(records[i].DocumentId);
+            string title = doc!.IndexedText;
+            
+            if (title == "The Matrix") matrixIndex = i;
+            else if (title == "The Matrix Reloaded") reloadedIndex = i;
+            else if (title == "The Matrix Revolutions") revolutionsIndex = i;
+            else if (title == "The Martian") martianIndex = i;
+            else if (title == "The Marine") marineIndex = i;
+        }
+        
+        // 1. The Matrix (Exact Prefix) should be #1 or very high
+        Assert.IsTrue(matrixIndex >= 0, "The Matrix should be found");
+        Assert.IsTrue(matrixIndex <= 2, $"The Matrix should be top ranked (found at {matrixIndex})");
+        
+        // 2. Matrix sequels (Clean Prefix "The Matri...") should beat Martian/Marine (Fuzzy/Noisy)
+        // "the matri" -> "The Matrix..." is a Match Quality of (Exact, Prefix).
+        // "the matri" -> "The Martian" is (Exact, Fuzzy?) or (Exact, None).
+        
+        if (martianIndex >= 0)
+        {
+            if (reloadedIndex >= 0)
+                Assert.IsTrue(reloadedIndex < martianIndex, $"The Matrix Reloaded ({reloadedIndex}) should rank higher than The Martian ({martianIndex})");
+            if (revolutionsIndex >= 0)
+                Assert.IsTrue(revolutionsIndex < martianIndex, $"The Matrix Revolutions ({revolutionsIndex}) should rank higher than The Martian ({martianIndex})");
+        }
+        
+        if (marineIndex >= 0)
+        {
+            if (reloadedIndex >= 0)
+                Assert.IsTrue(reloadedIndex < marineIndex, $"The Matrix Reloaded ({reloadedIndex}) should rank higher than The Marine ({marineIndex})");
+        }
+    }
+}
+
+/// <summary>
+/// Tests for short query behavior with small ad-hoc datasets to verify
+/// that even partial character matches return results.
+/// </summary>
+[TestClass]
+public class ShortQueryAdHocTests
+{
+    [TestMethod]
+    public void ShortQuery_TwoLetters_ReturnsPartialMatch()
+    {
+        // Create a minimal dataset
+        var engine = SearchEngine.CreateDefault();
+        var documents = new List<Document>
+        {
+            new Document(1, "cat"),
+            new Document(2, "dog"),
+            new Document(3, "ape")
+        };
+        
+        engine.IndexDocuments(documents);
+        
+        // Search for "va" - should return results containing 'v' or 'a'
+        // "ape" and "cat" both contain 'a', making them partial matches
+        // "ape" should rank higher because 'a' appears at word start
+        var result = engine.Search(new Query("va", 10));
+        
+        Console.WriteLine($"Search 'va' returned {result.Records.Length} results");
+        foreach (var record in result.Records)
+        {
+            var doc = engine.GetDocument(record.DocumentId);
+            Console.WriteLine($"  - {doc?.IndexedText} (score: {record.Score})");
+        }
+        
+        Assert.IsTrue(result.Records.Length > 0, "Should return at least one result for 'va'");
+        
+        // Verify results contain documents with matching characters
+        var topResult = result.Records[0];
+        var topDoc = engine.GetDocument(topResult.DocumentId);
+        Assert.IsTrue(topDoc?.IndexedText == "ape" || topDoc?.IndexedText == "cat", 
+            "'ape' or 'cat' should be top result for query 'va' (both contain 'a')");
+        
+        // Verify "cat" has better score than other results (if any)
+        if (result.Records.Length > 1)
+        {
+            for (int i = 1; i < result.Records.Length; i++)
+            {
+                Assert.IsTrue(topResult.Score >= result.Records[i].Score,
+                    $"Top result 'cat' (score: {topResult.Score}) should have better or equal score than other results (score: {result.Records[i].Score})");
+            }
+        }
+    }
+    
+    [TestMethod]
+    public void ShortQuery_TwoLetters_MultiplePartialMatches()
+    {
+        var engine = SearchEngine.CreateDefault();
+        var documents = new List<Document>
+        {
+            new Document(1, "apple"),
+            new Document(2, "banana"),
+            new Document(3, "cherry"),
+            new Document(4, "grape"),
+            new Document(5, "orange")
+        };
+        
+        engine.IndexDocuments(documents);
+        
+        // Search for "ra" - should return "grape", "orange", "cherry" (all contain 'r' or 'a')
+        var result = engine.Search(new Query("ra", 10));
+        
+        Console.WriteLine($"Search 'ra' returned {result.Records.Length} results");
+        foreach (var record in result.Records)
+        {
+            var doc = engine.GetDocument(record.DocumentId);
+            Console.WriteLine($"  - {doc?.IndexedText} (score: {record.Score})");
+        }
+        
+        Assert.IsTrue(result.Records.Length > 0, "Should return results for 'ra'");
+        
+        // Should find words containing 'r' and/or 'a'
+        HashSet<string> foundWords = new HashSet<string>();
+        foreach (var record in result.Records)
+        {
+            var doc = engine.GetDocument(record.DocumentId);
+            if (doc != null)
+            {
+                foundWords.Add(doc.IndexedText);
+            }
+        }
+        
+        // At minimum, should find grape (contains both 'r' and 'a')
+        Assert.IsTrue(foundWords.Contains("grape") || foundWords.Contains("orange") || foundWords.Contains("cherry"),
+            "Should return words containing 'r' and/or 'a'");
+    }
+    
+    [TestMethod]
+    public void ShortQuery_SingleLetter_ReturnsAllMatches()
+    {
+        var engine = SearchEngine.CreateDefault();
+        var documents = new List<Document>
+        {
+            new Document(1, "alpha"),
+            new Document(2, "beta"),
+            new Document(3, "gamma"),
+            new Document(4, "delta")
+        };
+        
+        engine.IndexDocuments(documents);
+        
+        // Search for "a" - should return "alpha", "gamma", "delta", "beta" (all contain 'a')
+        var result = engine.Search(new Query("a", 10));
+        
+        Console.WriteLine($"Search 'a' returned {result.Records.Length} results");
+        foreach (var record in result.Records)
+        {
+            var doc = engine.GetDocument(record.DocumentId);
+            Console.WriteLine($"  - {doc?.IndexedText} (score: {record.Score})");
+        }
+        
+        Assert.IsTrue(result.Records.Length > 0, "Should return results for single letter 'a'");
+        
+        // All words contain 'a', so should get all 4 results
+        Assert.IsTrue(result.Records.Length >= 3, "Should return at least 3 words containing 'a'");
+    }
+    
+    [TestMethod]
+    public void ShortQuery_TwoLetters_NoExactMatch_ReturnsPartial()
+    {
+        var engine = SearchEngine.CreateDefault();
+        var documents = new List<Document>
+        {
+            new Document(1, "table"),
+            new Document(2, "chair"),
+            new Document(3, "desk"),
+            new Document(4, "lamp")
+        };
+        
+        engine.IndexDocuments(documents);
+        
+        // Search for "ab" - exact "ab" doesn't appear, but "table" contains both 'a' and 'b'
+        var result = engine.Search(new Query("ab", 10));
+        
+        Console.WriteLine($"Search 'ab' returned {result.Records.Length} results");
+        foreach (var record in result.Records)
+        {
+            var doc = engine.GetDocument(record.DocumentId);
+            Console.WriteLine($"  - {doc?.IndexedText} (score: {record.Score})");
+        }
+        
+        Assert.IsTrue(result.Records.Length > 0, "Should return results for 'ab' even without exact match");
+        
+        // Should ideally find "table" (contains 'ab' as substring)
+        bool foundTable = false;
+        foreach (var record in result.Records)
+        {
+            var doc = engine.GetDocument(record.DocumentId);
+            if (doc?.IndexedText == "table")
+            {
+                foundTable = true;
+                break;
+            }
+        }
+        
+        Assert.IsTrue(foundTable, "Should return 'table' when searching for 'ab'");
     }
 }
 

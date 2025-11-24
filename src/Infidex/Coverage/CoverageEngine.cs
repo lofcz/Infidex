@@ -18,14 +18,21 @@ public class CoverageEngine
     public byte CalculateCoverageScore(string query, string documentText, double lcsSum, out int wordHits)
     {
         var result = CalculateCoverageInternal(query, documentText, lcsSum, out wordHits, 
-            out _, out _, out _, out _, out _);
+            out _, out _, out _, out _, out _, out _, out _, out _);
         return result.CoverageScore;
     }
     
     public ushort CalculateRankedScore(string query, string documentText, double lcsSum, byte baseTfidfScore, out int wordHits)
     {
         var result = CalculateCoverageInternal(query, documentText, lcsSum, out wordHits,
-            out int docTokenCount, out int termsWithAnyMatch, out int termsFullyMatched, out int termsStrictMatched, out int termsPrefixMatched);
+            out int docTokenCount,
+            out int termsWithAnyMatch,
+            out int termsFullyMatched,
+            out int termsStrictMatched,
+            out int termsPrefixMatched,
+            out int longestPrefixRun,
+            out int suffixPrefixRun,
+            out int phraseSpan);
         
         byte coverageScore = result.CoverageScore;
         int firstMatchIndex = result.FirstMatchIndex;
@@ -85,6 +92,128 @@ public class CoverageEngine
         return (ushort)((precedence << 8) | baseFinal);
     }
     
+    /// <summary>
+    /// Rich feature representation of coverage between a query and a document.
+    /// This is intended for feature-based ranking models in the fusion layer.
+    /// </summary>
+    public readonly struct CoverageFeatures
+    {
+        public readonly byte CoverageScore;
+        public readonly int TermsCount;
+        public readonly int TermsWithAnyMatch;
+        public readonly int TermsFullyMatched;
+        public readonly int TermsStrictMatched;
+        public readonly int TermsPrefixMatched;
+        public readonly int FirstMatchIndex;
+        public readonly float SumCi;
+        public readonly int WordHits;
+        public readonly int DocTokenCount;
+
+        /// <summary>
+        /// Longest run (in tokens) of consecutive query terms that are matched
+        /// as exact/prefix in order. Captures general phrase quality.
+        /// </summary>
+        public readonly int LongestPrefixRun;
+
+        /// <summary>
+        /// Length of the longest consecutive run at the *end* of the query
+        /// (suffix) whose terms are matched as exact/prefix. This models the
+        /// \"last terms\" / narrowing phrase (e.g. \"česká lípa\").
+        /// </summary>
+        public readonly int SuffixPrefixRun;
+
+        /// <summary>
+        /// Span (in token positions) covered by all matched terms in the
+        /// document: maxPos - minPos + 1. Smaller values mean terms appear
+        /// closer together, approximating phrase proximity.
+        /// </summary>
+        public readonly int PhraseSpan;
+
+        public CoverageFeatures(
+            byte coverageScore,
+            int termsCount,
+            int termsWithAnyMatch,
+            int termsFullyMatched,
+            int termsStrictMatched,
+            int termsPrefixMatched,
+            int firstMatchIndex,
+            float sumCi,
+            int wordHits,
+            int docTokenCount,
+            int longestPrefixRun,
+            int suffixPrefixRun,
+            int phraseSpan)
+        {
+            CoverageScore = coverageScore;
+            TermsCount = termsCount;
+            TermsWithAnyMatch = termsWithAnyMatch;
+            TermsFullyMatched = termsFullyMatched;
+            TermsStrictMatched = termsStrictMatched;
+            TermsPrefixMatched = termsPrefixMatched;
+            FirstMatchIndex = firstMatchIndex;
+            SumCi = sumCi;
+            WordHits = wordHits;
+            DocTokenCount = docTokenCount;
+            LongestPrefixRun = longestPrefixRun;
+            SuffixPrefixRun = suffixPrefixRun;
+            PhraseSpan = phraseSpan;
+        }
+    }
+
+    /// <summary>
+    /// Computes detailed coverage features for a given (query, document) pair.
+    /// These features can then be combined with BM25+ and other signals using a
+    /// feature-based ranking model in the fusion layer.
+    /// </summary>
+    public CoverageFeatures CalculateFeatures(string query, string documentText, double lcsSum)
+    {
+        var result = CalculateCoverageInternal(
+            query,
+            documentText,
+            lcsSum,
+            out int wordHits,
+            out int docTokenCount,
+            out int termsWithAnyMatch,
+            out int termsFullyMatched,
+            out int termsStrictMatched,
+            out int termsPrefixMatched,
+            out int longestPrefixRun,
+            out int suffixPrefixRun,
+            out int phraseSpan);
+
+        return new CoverageFeatures(
+            result.CoverageScore,
+            result.TermsCount,
+            termsWithAnyMatch,
+            termsFullyMatched,
+            termsStrictMatched,
+            termsPrefixMatched,
+            result.FirstMatchIndex,
+            result.SumCi,
+            wordHits,
+            docTokenCount,
+            longestPrefixRun,
+            suffixPrefixRun,
+            phraseSpan);
+    }
+
+    // Internal result structure for coverage calculation
+    private readonly struct CoverageResult
+    {
+        public readonly byte CoverageScore;
+        public readonly int TermsCount;
+        public readonly int FirstMatchIndex;
+        public readonly float SumCi;
+        
+        public CoverageResult(byte coverageScore, int termsCount, int firstMatchIndex, float sumCi)
+        {
+            CoverageScore = coverageScore;
+            TermsCount = termsCount;
+            FirstMatchIndex = firstMatchIndex;
+            SumCi = sumCi;
+        }
+    }
+    
     private readonly struct StringSlice
     {
         public readonly int Offset;
@@ -102,7 +231,15 @@ public class CoverageEngine
     }
 
     private CoverageResult CalculateCoverageInternal(string query, string documentText, double lcsSum, 
-        out int wordHits, out int docTokenCount, out int termsWithAnyMatch, out int termsFullyMatched, out int termsStrictMatched, out int termsPrefixMatched)
+        out int wordHits,
+        out int docTokenCount,
+        out int termsWithAnyMatch,
+        out int termsFullyMatched,
+        out int termsStrictMatched,
+        out int termsPrefixMatched,
+        out int longestPrefixRun,
+        out int suffixPrefixRun,
+        out int phraseSpan)
     {
         wordHits = 0;
         docTokenCount = 0;
@@ -110,6 +247,9 @@ public class CoverageEngine
         termsFullyMatched = 0;
         termsStrictMatched = 0;
         termsPrefixMatched = 0;
+        longestPrefixRun = 0;
+        suffixPrefixRun = 0;
+        phraseSpan = 0;
         
         if (query.Length == 0) 
             return new CoverageResult(0, 0, -1, 0);
@@ -464,79 +604,6 @@ public class CoverageEngine
                 }
             }
 
-            // Check if fuzzy needed
-            bool allTermsFullyMatched = true;
-            for (int i = 0; i < qCount; i++)
-            {
-                if (termMaxChars[i] > 0 && termMatchedChars[i] < termMaxChars[i])
-                {
-                    allTermsFullyMatched = false;
-                    break;
-                }
-            }
-
-            // 3. Fuzzy
-            if (_setup.CoverFuzzyWords && qCount > 0 && !allTermsFullyMatched)
-            {
-                int maxQueryLength = 0;
-                for(int i=0; i<qCount; i++) if (qActive[i] && activeQueryTokens[i].Length > maxQueryLength) maxQueryLength = activeQueryTokens[i].Length;
-                
-                if (maxQueryLength > 0)
-                {
-                    double maxRelDist = 0.25;
-                    int maxEditDist = Math.Max(1, (int)Math.Round(maxQueryLength * maxRelDist));
-                    
-                    for (int editDist = 1; editDist <= maxEditDist; editDist++)
-                    {
-                        bool anyQ = false;
-                        for(int i=0; i<qCount; i++) if (qActive[i]) anyQ = true;
-                        if (!anyQ) break;
-                        
-                        for (int i = 0; i < qCount; i++)
-                        {
-                            if (!qActive[i]) continue;
-                            var qSlice = activeQueryTokens[i];
-                            int qLen = qSlice.Length;
-                            
-                            int minLen = Math.Max(_setup.MinWordSize + 1, qLen - editDist);
-                            int maxLen = Math.Min(_setup.LevenshteinMaxWordSize, qLen + editDist);
-                            if (maxLen > 63) maxLen = 63;
-                            if (qLen > maxLen || qLen < minLen) continue;
-                            
-                            ReadOnlySpan<char> qText = qSpanFull.Slice(qSlice.Offset, qSlice.Length);
-                            
-                            for (int j = 0; j < dCount; j++)
-                            {
-                                if (!dActive[j]) continue;
-                                var dSlice = activeDocTokens[j];
-                                int dLen = dSlice.Length;
-                                if (dLen > maxLen || dLen < minLen) continue;
-                                
-                                ReadOnlySpan<char> dText = dSpanFull.Slice(dSlice.Offset, dSlice.Length);
-                                
-                                // Optimized to use Span and avoid string allocations
-                                int dist = LevenshteinDistance.CalculateDamerau(qText, dText, editDist, ignoreCase: true);
-                                
-                                if (dist <= editDist)
-                                {
-                                    wordHits++;
-                                    num3 += (qLen - dist);
-                                
-                                    termMatchedChars[i] += (qLen - dist);
-                                    termHasPrefix[i] = true;
-                                    int pos = dSlice.Position;
-                                    if (termFirstPos[i] == -1 || pos < termFirstPos[i]) termFirstPos[i] = pos;
-                                    
-                                    qActive[i] = false;
-                                    dActive[j] = false;
-                                    break;
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-
             // 4. Prefix/Suffix
             if (_setup.CoverPrefixSuffix && qCount > 0)
             {
@@ -622,8 +689,11 @@ public class CoverageEngine
                             // Fuzzy Prefix Match
                             // If we didn't match exactly, check if qText is "close" to being a prefix of dText.
                             // Signal Strength: Low/Moderate (0.5 * Similarity).
-                            // Requires qText length >= 4 to avoid high false positive rate on short terms.
-                            else if (qSlice.Length >= 4)
+                            // Default: requires qText length >= 4 to avoid high false positive rate on short terms.
+                            // Exception: for the LAST query term we allow slightly shorter fuzzy prefixes (>= 2)
+                            // to make incremental typing on the trailing token behave more intuitively
+                            // (e.g. "eatrix f"/"eatrix fe" -> "Beatrix Farrands ...").
+                            else if (qSlice.Length >= 4 || (i == qCount - 1 && qSlice.Length >= 2))
                             {
                                 int qLen = qSlice.Length;
                                 int maxEdits = 1; 
@@ -636,7 +706,7 @@ public class CoverageEngine
                                     matchScore = (qLen - dist) * 0.5;
                                     if (matchScore < 0.1) matchScore = 0.1;
                                     isMatch = true;
-                                    isPrefix = true;
+                                    // isPrefix = true; // Fuzzy prefix is NOT a clean prefix
                                 }
                                 // Check len+1 (deletion in query / insertion in doc)
                                 else if (dSlice.Length > qLen)
@@ -647,7 +717,7 @@ public class CoverageEngine
                                         matchScore = (qLen - dist) * 0.5;
                                         if (matchScore < 0.1) matchScore = 0.1;
                                         isMatch = true;
-                                        isPrefix = true;
+                                        // isPrefix = true;
                                     }
                                     else if (qLen > 1) // len-1 (insertion in query / deletion in doc)
                                     {
@@ -657,10 +727,25 @@ public class CoverageEngine
                                             matchScore = ((qLen - 1) - dist) * 0.5;
                                             if (matchScore < 0.1) matchScore = 0.1;
                                             isMatch = true;
-                                            isPrefix = true;
+                                            // isPrefix = true;
                                         }
                                     }
                                 }
+                            }
+                        }
+                        // Symmetric case: query token is LONGER than the document token.
+                        // This captures cases where the user types a concatenated or
+                        // extended form whose suffix corresponds closely to a shorter
+                        // word in the document (e.g. \"sciozlín\" -> \"Zlín\").
+                        else if (qSlice.Length > dSlice.Length)
+                        {
+                            // Exact suffix match: query ends with the document token.
+                            // We treat this as a strong partial coverage signal, but do
+                            // NOT mark it as a clean prefix match.
+                            if (qText.EndsWith(dText, StringComparison.OrdinalIgnoreCase))
+                            {
+                                matchScore = dSlice.Length;
+                                isMatch = true;
                             }
                         }
                         
@@ -684,6 +769,80 @@ public class CoverageEngine
                 
                 ArrayPool<int>.Shared.Return(qIndices);
                 ArrayPool<int>.Shared.Return(dIndices);
+            }
+
+            // Check if fuzzy needed
+            bool allTermsFullyMatched = true;
+            for (int i = 0; i < qCount; i++)
+            {
+                if (termMaxChars[i] > 0 && termMatchedChars[i] < termMaxChars[i])
+                {
+                    allTermsFullyMatched = false;
+                    break;
+                }
+            }
+
+            // 3. Fuzzy
+            if (_setup.CoverFuzzyWords && qCount > 0 && !allTermsFullyMatched)
+            {
+                int maxQueryLength = 0;
+                for(int i=0; i<qCount; i++) if (qActive[i] && activeQueryTokens[i].Length > maxQueryLength) maxQueryLength = activeQueryTokens[i].Length;
+                
+                if (maxQueryLength > 0)
+                {
+                    double maxRelDist = 0.25;
+                    int maxEditDist = Math.Max(1, (int)Math.Round(maxQueryLength * maxRelDist));
+                    
+                    for (int editDist = 1; editDist <= maxEditDist; editDist++)
+                    {
+                        bool anyQ = false;
+                        for(int i=0; i<qCount; i++) if (qActive[i]) anyQ = true;
+                        if (!anyQ) break;
+                        
+                        for (int i = 0; i < qCount; i++)
+                        {
+                            if (!qActive[i]) continue;
+                            var qSlice = activeQueryTokens[i];
+                            int qLen = qSlice.Length;
+                            
+                            int minLen = Math.Max(_setup.MinWordSize + 1, qLen - editDist);
+                            int maxLen = Math.Min(_setup.LevenshteinMaxWordSize, qLen + editDist);
+                            if (maxLen > 63) maxLen = 63;
+                            if (qLen > maxLen || qLen < minLen) continue;
+                            
+                            ReadOnlySpan<char> qText = qSpanFull.Slice(qSlice.Offset, qSlice.Length);
+                            
+                            for (int j = 0; j < dCount; j++)
+                            {
+                                if (!dActive[j]) continue;
+                                var dSlice = activeDocTokens[j];
+                                int dLen = dSlice.Length;
+                                if (dLen > maxLen || dLen < minLen) continue;
+                                
+                                ReadOnlySpan<char> dText = dSpanFull.Slice(dSlice.Offset, dSlice.Length);
+                                
+                                // Optimized to use Span and avoid string allocations
+                                int dist = LevenshteinDistance.CalculateDamerau(qText, dText, editDist, ignoreCase: true);
+                                
+                                if (dist <= editDist)
+                                {
+                                    wordHits++;
+                                    num3 += (qLen - dist);
+                                
+                                    termMatchedChars[i] += (qLen - dist);
+                                    // Fuzzy match does NOT count as prefix match for Cleanliness check
+                                    // termHasPrefix[i] = true; 
+                                    int pos = dSlice.Position;
+                                    if (termFirstPos[i] == -1 || pos < termFirstPos[i]) termFirstPos[i] = pos;
+                                    
+                                    qActive[i] = false;
+                                    dActive[j] = false;
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
             }
         }
         finally
@@ -712,6 +871,9 @@ public class CoverageEngine
         float sumCi = 0f;
         int firstMatchIndex = -1;
 
+        int minPos = int.MaxValue;
+        int maxPos = -1;
+
         for (int i = 0; i < qCount; i++)
         {
             if (termMaxChars[i] <= 0) continue;
@@ -733,27 +895,66 @@ public class CoverageEngine
             if (termFirstPos[i] >= 0)
             {
                 if (firstMatchIndex == -1 || termFirstPos[i] < firstMatchIndex) firstMatchIndex = termFirstPos[i];
+
+                if (termFirstPos[i] < minPos) minPos = termFirstPos[i];
+                if (termFirstPos[i] > maxPos) maxPos = termFirstPos[i];
             }
+        }
+
+        // For single-term queries, also fold in whole-string similarity via LCS.
+        // This captures cases where the query is a joined or noisy form of
+        // multiple document tokens (e.g., \"sciozlín\" vs \"ScioŠkola Zlín\"),
+        // which word-level coverage alone would under-count.
+        if (qCount == 1 && queryLen > 0 && lcsSum > 0.0)
+        {
+            float ciLcs = (float)Math.Min(1.0, lcsSum / queryLen);
+            if (ciLcs > sumCi)
+            {
+                sumCi = ciLcs;
+            }
+        }
+
+        // Phrase metrics over prefix/exact matches:
+        // 1) Longest consecutive run anywhere in the query.
+        // 2) Longest consecutive run at the end (suffix) of the query.
+        int currentRun = 0;
+        for (int i = 0; i < qCount; i++)
+        {
+            bool prefixHit = termHasPrefix[i] && termMaxChars[i] > 0 && termMatchedChars[i] > 0;
+            if (prefixHit)
+            {
+                currentRun++;
+                if (currentRun > longestPrefixRun) longestPrefixRun = currentRun;
+            }
+            else
+            {
+                currentRun = 0;
+            }
+        }
+
+        int suffixRun = 0;
+        for (int i = qCount - 1; i >= 0; i--)
+        {
+            bool prefixHit = termHasPrefix[i] && termMaxChars[i] > 0 && termMatchedChars[i] > 0;
+            if (prefixHit)
+            {
+                suffixRun++;
+            }
+            else
+            {
+                break;
+            }
+        }
+        suffixPrefixRun = suffixRun;
+
+        // Phrase span: distance (in token positions) between earliest and latest
+        // matched terms in the document. 0 if fewer than 2 terms matched.
+        if (minPos != int.MaxValue && maxPos >= minPos && termsWithAnyMatch >= 2)
+        {
+            phraseSpan = (maxPos - minPos) + 1;
         }
         
         return new CoverageResult(coverageScore, qCount, firstMatchIndex, sumCi);
-    }
-
-    // Internal result structure for coverage calculation
-    private readonly struct CoverageResult
-    {
-        public readonly byte CoverageScore;
-        public readonly int TermsCount;
-        public readonly int FirstMatchIndex;
-        public readonly float SumCi;
-        
-        public CoverageResult(byte coverageScore, int termsCount, int firstMatchIndex, float sumCi)
-        {
-            CoverageScore = coverageScore;
-            TermsCount = termsCount;
-            FirstMatchIndex = firstMatchIndex;
-            SumCi = sumCi;
-        }
     }
 
     private int TokenizeToSpan(string text, Span<StringSlice> tokens, int minWordSize)
@@ -795,4 +996,3 @@ public class CoverageEngine
         return count;
     }
 }
-

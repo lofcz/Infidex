@@ -18,6 +18,14 @@ public class VectorModel
     private readonly int _stopTermLimit;
     private readonly float[] _fieldWeights;
     
+    // BM25+ parameters and precomputed document statistics
+    // See: Trotman et al., "Improvements to BM25 and Language Models Examined"
+    private readonly float _bm25K1 = 1.2f;
+    private readonly float _bm25B  = 0.75f;
+    private readonly float _bm25Delta = 1.0f;
+    private float[]? _docLengths;
+    private float _avgDocLength;
+    
     public Tokenizer Tokenizer => _tokenizer;
     
     /// <summary>
@@ -115,61 +123,69 @@ public class VectorModel
     }
     
     /// <summary>
-    /// Builds inverted lists with batch processing and progress reporting.
-    /// Uses two-pass normalization for proper L2 normalization.
+    /// Finalizes the inverted index after all documents have been indexed.
+    /// For the BM25+ backbone this computes per-document lengths and the
+    /// global average document length, which are then used at query time.
     /// </summary>
     public void BuildInvertedLists(
         int batchDelayMs = -1, 
         int batchSize = 0, 
         CancellationToken cancellationToken = default)
     {
-        _documents.GetAllDocuments(); // Trigger any cleanup
-        
         int totalDocs = _documents.Count;
-        float[] vectorLengths = new float[totalDocs];
-        
-        // FIRST CYCLE: Accumulate vector lengths
+        _docLengths = new float[totalDocs];
+        _avgDocLength = 0f;
+
         int termCount = 0;
         int totalTerms = _termCollection.Count;
-        
+
+        // Single pass over all postings: accumulate field‑weighted term
+        // frequencies into per-document lengths. We intentionally keep
+        // the raw per-document term frequencies in the postings lists
+        // and compute BM25+ scores on the fly at query time.
         foreach (Term term in _termCollection.GetAllTerms())
         {
             if (++termCount % 10 == 0 && cancellationToken.IsCancellationRequested)
                 return;
-            
+
             if (batchDelayMs >= 0 && batchSize > 0 && termCount % batchSize == 0)
                 Thread.Sleep(batchDelayMs);
-            
-            term.FirstCycleNormalizeDocumentVectorElement(totalDocs, vectorLengths);
-            
-            // Report progress (0-50%)
+
+            List<int>? docIds = term.GetDocumentIds();
+            List<byte>? weights = term.GetWeights();
+
+            if (docIds == null || weights == null)
+                continue;
+
+            int postings = docIds.Count;
+            for (int i = 0; i < postings; i++)
+            {
+                int internalId = docIds[i];
+                if ((uint)internalId >= (uint)totalDocs)
+                    continue;
+
+                // Interpret the stored byte as (field‑weighted) term frequency.
+                // This effectively gives us a BM25F‑style field weighting where
+                // fields with higher importance contributed larger TF values.
+                _docLengths[internalId] += weights[i];
+            }
+
+            // Report progress (0‑100%) based on term pass
             if (termCount % 100 == 0)
-                ProgressChanged?.Invoke(this, termCount * 50 / Math.Max(totalTerms, 1));
+            {
+                ProgressChanged?.Invoke(this, termCount * 100 / Math.Max(totalTerms, 1));
+            }
         }
-        
-        // Take square roots
-        for (int i = 0; i < vectorLengths.Length; i++)
+
+        // Compute average document length for BM25+ normalization
+        float totalLength = 0f;
+        for (int i = 0; i < _docLengths.Length; i++)
         {
-            vectorLengths[i] = MathF.Sqrt(vectorLengths[i]);
+            totalLength += _docLengths[i];
         }
-        
-        // SECOND CYCLE: Normalize and quantize weights
-        termCount = 0;
-        foreach (Term term in _termCollection.GetAllTerms())
-        {
-            if (++termCount % 10 == 0 && cancellationToken.IsCancellationRequested)
-                break;
-            
-            if (batchDelayMs >= 0 && batchSize > 0 && termCount % batchSize == 0)
-                Thread.Sleep(batchDelayMs);
-            
-            term.SecondCycleNormalizeDocumentVectorElement(totalDocs, vectorLengths);
-            
-            // Report progress (50-100%)
-            if (termCount % 100 == 0)
-                ProgressChanged?.Invoke(this, 50 + termCount * 50 / Math.Max(totalTerms, 1));
-        }
-        
+
+        _avgDocLength = totalDocs > 0 ? totalLength / totalDocs : 0f;
+
         ProgressChanged?.Invoke(this, 100);
     }
     
@@ -211,7 +227,8 @@ public class VectorModel
     }
     
     /// <summary>
-    /// Searches for documents matching the query using TF-IDF cosine similarity
+    /// Searches for documents matching the query using a BM25+ style scoring
+    /// function over the indexed n‑gram/word terms.
     /// </summary>
     /// <param name="queryText">The search query</param>
     /// <param name="bestSegments">Optional 2D array to track best-scoring segments per document (default is empty)</param>
@@ -237,81 +254,110 @@ public class VectorModel
         
         if (queryTerms.Count == 0)
             return scoreArray;
-        
-        // Calculate query vector weights
-        byte[] queryWeights = CalculateQueryWeights(queryTerms);
-        
-        // Calculate scores using dot product with SpanAlloc for performance
-        long pointer = 0;
-        try
+
+        int totalDocs = _documents.Count;
+        if (totalDocs == 0)
+            return scoreArray;
+
+        // Ensure document length statistics are available. In normal usage
+        // SearchEngine will have called BuildInvertedLists/CalculateWeights
+        // after indexing, but we defensively recompute if needed.
+        if (_docLengths == null || _docLengths.Length != totalDocs || _avgDocLength <= 0f)
         {
-            Span<byte> documentScores = SpanAlloc.Alloc(_documents.Count, out pointer);
-            
-            for (int i = 0; i < queryTerms.Count; i++)
+            BuildInvertedLists(cancellationToken: default);
+        }
+
+        float avgdl = _avgDocLength > 0f ? _avgDocLength : 1f;
+        float[] docScores = new float[totalDocs];
+
+        // Accumulate BM25+ scores per document over all query terms
+        for (int i = 0; i < queryTerms.Count; i++)
+        {
+            Term term = queryTerms[i];
+            int df = term.DocumentFrequency;
+            if (df <= 0)
+                continue;
+
+            List<int>? docIds = term.GetDocumentIds();
+            List<byte>? docWeights = term.GetWeights();
+
+            if (docIds == null || docWeights == null)
+                continue;
+
+            float idf = ComputeBm25Idf(totalDocs, df);
+
+            int postings = docIds.Count;
+            for (int j = 0; j < postings; j++)
             {
-                if (queryWeights[i] == 0)
+                int internalId = docIds[j];
+                if ((uint)internalId >= (uint)totalDocs)
                     continue;
-                
-                Term term = queryTerms[i];
-                List<int>? docIds = term.GetDocumentIds();
-                List<byte>? docWeights = term.GetWeights();
-                
-                if (docIds == null || docWeights == null)
+
+                Document? doc = _documents.GetDocument(internalId);
+                if (doc == null || doc.Deleted)
                     continue;
-                
-                for (int j = 0; j < docIds.Count; j++)
+
+                float tf = docWeights[j]; // interpret stored byte as (field‑weighted) TF
+                if (tf <= 0f)
+                    continue;
+
+                float dl = _docLengths![internalId];
+                if (dl <= 0f)
+                    dl = 1f;
+
+                // BM25+ term contribution:
+                // score_i = IDF(q_i) * ( (tf * (k1 + 1)) / (tf + k1 * (1 - b + b * dl/avgdl)) + delta )
+                float normFactor = _bm25K1 * (1f - _bm25B + _bm25B * (dl / avgdl));
+                float denom = tf + normFactor;
+                if (denom <= 0f)
+                    continue;
+
+                float bm25Core = (tf * (_bm25K1 + 1f)) / denom;
+                float termScore = idf * (bm25Core + _bm25Delta);
+
+                docScores[internalId] += termScore;
+
+                // Track best segment if bestSegments tracking is enabled
+                if (bestSegments.Height > 0 && bestSegments.Width > 0)
                 {
-                    int internalId = docIds[j];
-                    byte docWeight = docWeights[j];
-                    byte queryWeight = queryWeights[i];
+                    int segmentNumber = doc.SegmentNumber;
+                    int baseId = internalId - segmentNumber;
 
-                    // Multiply byte weights and scale back (matching original VectorModel behavior)
-                    float scoreContribution = (docWeight * queryWeight) / 255f;
-                    float currentScore = documentScores[internalId];
-                    float contribRounded = MathF.Round(scoreContribution);
-                    byte newScore = (byte)MathF.Min(contribRounded + currentScore, 255f);
-                    
-                    if (EnableDebugLogging)
+                    if (baseId >= 0 && baseId < bestSegments.Height &&
+                        queryIndex >= 0 && queryIndex < bestSegments.Width)
                     {
-                        Document? docForDebug = _documents.GetDocument(internalId);
-                        long docKeyForDebug = docForDebug?.DocumentKey ?? internalId;
-                        Console.WriteLine(
-                            $"[DEBUG-VM] term=\"{term.Text}\", docKey={docKeyForDebug}, internalId={internalId}, " +
-                            $"docWeight={docWeight}, queryWeight={queryWeight}, " +
-                            $"contribRounded={contribRounded}, prevScore={currentScore}, newScore={newScore}");
-                    }
-
-                    documentScores[internalId] = newScore;
-                    
-                    // Get document for this internal ID
-                    Document? doc = _documents.GetDocument(internalId);
-                    if (doc != null)
-                    {
-                        scoreArray.Add(doc.DocumentKey, newScore);
-                        
-                        // Track best segment if bestSegments tracking is enabled
-                        if (bestSegments.Height > 0 && bestSegments.Width > 0)
-                        {
-                            int segmentNumber = doc.SegmentNumber;
-                            int baseId = internalId - segmentNumber;
-                            
-                            if (baseId >= 0 && baseId < bestSegments.Height && 
-                                queryIndex >= 0 && queryIndex < bestSegments.Width)
-                            {
-                                // Store which segment number scored for this base document
-                                bestSegments[baseId, queryIndex] = (byte)segmentNumber;
-                            }
-                        }
+                        bestSegments[baseId, queryIndex] = (byte)segmentNumber;
                     }
                 }
             }
         }
-        finally
+
+        // Normalize BM25+ scores to the 0‑255 range used by the rest of the
+        // engine (coverage fusion expects a byte‑scale base score).
+        float maxScore = 0f;
+        for (int i = 0; i < docScores.Length; i++)
         {
-            if (pointer != 0)
-                SpanAlloc.Free(pointer);
+            if (docScores[i] > maxScore)
+                maxScore = docScores[i];
         }
-        
+
+        if (maxScore <= 0f)
+            return scoreArray;
+
+        for (int internalId = 0; internalId < docScores.Length; internalId++)
+        {
+            float raw = docScores[internalId];
+            if (raw <= 0f)
+                continue;
+
+            Document? doc = _documents.GetDocument(internalId);
+            if (doc == null || doc.Deleted)
+                continue;
+
+            byte scaled = (byte)MathF.Min(255f, (raw / maxScore) * 255f);
+            scoreArray.Add(doc.DocumentKey, scaled);
+        }
+
         return scoreArray;
     }
     
@@ -343,8 +389,26 @@ public class VectorModel
             float normalized = norm > 0 ? rawWeights[i] / norm : 0f;
             quantizedWeights[i] = ByteAsFloat.F2B(normalized);
         }
-        
+
         return quantizedWeights;
+    }
+
+    /// <summary>
+    /// Standard BM25 IDF component with saturation safeguard:
+    /// IDF(q) = ln( (N - df + 0.5)/(df + 0.5) + 1 )
+    /// </summary>
+    private static float ComputeBm25Idf(int totalDocuments, int documentFrequency)
+    {
+        if (documentFrequency <= 0 || totalDocuments <= 0)
+            return 0f;
+
+        float df = documentFrequency;
+        float N = totalDocuments;
+        float ratio = (N - df + 0.5f) / (df + 0.5f);
+        if (ratio <= 0f)
+            return 0f;
+
+        return MathF.Log(ratio + 1f);
     }
     
     /// <summary>

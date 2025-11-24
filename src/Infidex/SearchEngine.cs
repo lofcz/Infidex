@@ -23,6 +23,15 @@ public enum SearchEngineStatus
 }
 
 /// <summary>
+/// Indicates the type of match found for short query searches.
+/// </summary>
+internal enum MatchType
+{
+    Partial,      // Query characters found but not as prefix
+    ExactPrefix   // Query found as exact prefix match
+}
+
+/// <summary>
 /// Main search engine that combines TF-IDF relevancy ranking (Stage 1) 
 /// with Coverage lexical matching (Stage 2) using score fusion.
 /// Provides thread-safe concurrency for searching and indexing.
@@ -34,14 +43,14 @@ public class SearchEngine : IDisposable
     private readonly CoverageSetup? _coverageSetup;
     private readonly WordMatcher.WordMatcher? _wordMatcher;
     private bool _isIndexed;
-    private Api.DocumentFields? _documentFieldSchema;
+    private DocumentFields? _documentFieldSchema;
     
     // Bytecode VM for filter execution
     // Thread-local to avoid state corruption between concurrent threads
     private readonly ThreadLocal<FilterCompiler> _filterCompiler = new ThreadLocal<FilterCompiler>(() => new FilterCompiler());
     private readonly ThreadLocal<FilterVM> _filterVM = new ThreadLocal<FilterVM>(() => new FilterVM());
     // Thread-safe cache for compiled filters
-    private readonly ConcurrentDictionary<Api.Filter, CompiledFilter> _compiledFilterCache = new ConcurrentDictionary<Api.Filter, CompiledFilter>();
+    private readonly ConcurrentDictionary<Filter, CompiledFilter> _compiledFilterCache = new ConcurrentDictionary<Filter, CompiledFilter>();
     
     // Concurrency management
     // Reader/writer lock: multiple concurrent searches, writers block readers.
@@ -339,7 +348,7 @@ public class SearchEngine : IDisposable
     /// </summary>
     /// <param name="query">Query with search parameters</param>
     /// <returns>Result with records, facets, and metadata</returns>
-    public Api.Result Search(Api.Query query)
+    public Result Search(Query query)
     {
         _rwLock.EnterReadLock();
         try
@@ -349,11 +358,11 @@ public class SearchEngine : IDisposable
             // until indexing completes or see an empty, consistent snapshot.
             if (!_isIndexed)
             {
-                return Api.Result.MakeEmptyResult();
+                return Result.MakeEmptyResult();
             }
             
             // Validate and normalize query
-            Query normalizedQuery = new Api.Query(query);
+            Query normalizedQuery = new Query(query);
             normalizedQuery.Text = normalizedQuery.Text.Trim().ToLowerInvariant();
             normalizedQuery.TimeOutLimitMilliseconds = Math.Clamp(normalizedQuery.TimeOutLimitMilliseconds, 0, 10000);
             
@@ -382,7 +391,7 @@ public class SearchEngine : IDisposable
                 ScoreEntry[] topResultsArray = allResultsArray.Take(normalizedQuery.MaxNumberOfRecordsToReturn).ToArray();
                 Dictionary<string, KeyValuePair<string, int>[]> facetsAll = FacetBuilder.BuildFacets(topResultsArray, _vectorModel.Documents, _documentFieldSchema);
                 
-                return new Api.Result(topResultsArray, facetsAll,
+                return new Result(topResultsArray, facetsAll,
                     topResultsArray.Length > 0 ? topResultsArray.Length - 1 : 0,
                     topResultsArray.Length > 0 ? topResultsArray[^1].Score : (byte)0,
                     false);
@@ -390,7 +399,7 @@ public class SearchEngine : IDisposable
             
             if (string.IsNullOrWhiteSpace(normalizedQuery.Text))
             {
-                return Api.Result.MakeEmptyResult();
+                return Result.MakeEmptyResult();
             }
             
             // Perform the search using existing logic
@@ -429,7 +438,7 @@ public class SearchEngine : IDisposable
             // Take top N results
             ScoreEntry[] topResults = results.Take(normalizedQuery.MaxNumberOfRecordsToReturn).ToArray();
             
-            return new Api.Result(topResults, facets,
+            return new Result(topResults, facets,
                 topResults.Length > 0 ? topResults.Length - 1 : 0,
                 topResults.Length > 0 ? topResults[^1].Score : (byte)0,
                 false)
@@ -483,7 +492,469 @@ public class SearchEngine : IDisposable
             // STAGE 1: Relevancy Ranking (TF-IDF Vector Space) with segment tracking
             _vectorModel.EnableDebugLogging = EnableDebugLogging;
             long tfidfStart = perfStopwatch?.ElapsedMilliseconds ?? 0;
-            ScoreArray relevancyScores = _vectorModel.Search(searchText, bestSegments, queryIndex: 0);
+            
+            // SHORT QUERY HANDLING
+            // Check if ANY word in the query can use n-grams. If at least one word can, use normal search.
+            // Only use short query path if ALL words are too short.
+            ScoreArray relevancyScores;
+            int minIndexSize = _vectorModel.Tokenizer.IndexSizes.Min();
+            
+            // Analyze query words to determine which can use n-grams (long words) and which are short.
+            // This allows us to run TF-IDF only on long words (e.g. "san") while handling short words
+            // (e.g. "a") via precedence logic, without any arbitrary thresholds.
+            bool canUseNGrams = false;
+            bool hasMixedTerms = false;
+            string[] shortWords = [];
+            string longWordsSearchText = searchText; // default: whole query
+            
+            if (_vectorModel.Tokenizer.TokenizerSetup != null)
+            {
+                string[] words = searchText.Split(_vectorModel.Tokenizer.TokenizerSetup.Delimiters,
+                    StringSplitOptions.RemoveEmptyEntries);
+                
+                if (words.Length == 0)
+                {
+                    // No words after split - use entire query length check
+                    canUseNGrams = searchText.Length >= minIndexSize;
+                }
+                else
+                {
+                    List<string> longWords = new List<string>();
+                    List<string> shortWordsList = new List<string>();
+                    
+                    foreach (string word in words)
+                    {
+                        if (word.Length >= minIndexSize)
+                        {
+                            longWords.Add(word);
+                        }
+                        else
+                        {
+                            shortWordsList.Add(word.ToLowerInvariant());
+                        }
+                    }
+                    
+                    if (longWords.Count > 0)
+                    {
+                        canUseNGrams = true;
+                        longWordsSearchText = string.Join(' ', longWords);
+                    }
+                    
+                    if (shortWordsList.Count > 0 && longWords.Count > 0)
+                    {
+                        hasMixedTerms = true;
+                        shortWords = shortWordsList.ToArray();
+                    }
+                }
+            }
+            else
+            {
+                // No tokenizer setup - fall back to checking entire query
+                canUseNGrams = searchText.Length >= minIndexSize;
+            }
+            
+            // SPECIAL CASE: Single-character queries (e.g., "a", "s").
+            // For these, n-gram indexing is not applicable and naive inverted index
+            // scoring tends to over-favor very long titles with many occurrences.
+            // Instead, we run a direct lexical scan over titles and rank by:
+            //   - whether any word starts with the character,
+            //   - whether the title itself starts with that character,
+            //   - and simple density/position heuristics.
+            if (!canUseNGrams && searchText.Length == 1)
+            {
+                ScoreEntry[] singleCharResults = SearchSingleCharacterQuery(
+                    searchText[0],
+                    bestSegments,
+                    queryIndex: 0,
+                    maxResults: maxResults);
+                return singleCharResults;
+            }
+            
+            if (!canUseNGrams)
+            {
+                // SHORT QUERY FAST PATH
+                // Query is too short for standard n-gram search - use prefix matching with inverted index.
+                // Complexity: O(terms) instead of O(documents), leveraging existing inverted index.
+
+                if (EnableDebugLogging)
+                {
+                    Console.WriteLine($"[DEBUG] Short query fast path: query='{searchText}', len={searchText.Length}, minIndexSize={minIndexSize}");
+                }
+                
+                relevancyScores = new ScoreArray();
+                string searchLower = searchText.ToLowerInvariant();
+                HashSet<long> matchedDocs = [];
+
+                // Track whether a document has a word whose FIRST token starts
+                // with the short query prefix. This lets us enforce a clear,
+                // data-agnostic precedence rule:
+                //   Docs whose first token starts with the query prefix
+                //   strictly outrank docs where the prefix only appears later.
+                // Example for "de":
+                //   - "Dear Dead Delilah"  -> first token "dear"  -> high tier
+                //   - "Intent to Destroy"  -> first token "intent" -> lower tier
+                HashSet<long> firstTokenPrefixDocs = [];
+                
+                // Build prefix patterns to match
+                List<string> prefixPatterns = [];
+                
+                // Add padded prefixes (documents starting with the query)
+                string padPrefix = new string(Tokenizer.START_PAD_CHAR, _vectorModel.Tokenizer.StartPadSize);
+                for (int i = 0; i < minIndexSize && i < padPrefix.Length + searchLower.Length; i++)
+                {
+                    int padCount = Math.Max(0, padPrefix.Length - i);
+                    int queryCount = Math.Min(searchLower.Length, minIndexSize - padCount);
+                    
+                    if (queryCount > 0)
+                    {
+                        string prefix = string.Concat(new string(Tokenizer.START_PAD_CHAR, padCount), searchLower.AsSpan(0, queryCount));
+                        prefixPatterns.Add(prefix);
+                    }
+                }
+                
+                // Add word-boundary prefix (documents containing the query as a word)
+                prefixPatterns.Add(" " + searchLower);
+                
+                if (EnableDebugLogging)
+                {
+                    Console.WriteLine($"[DEBUG] Generated {prefixPatterns.Count} prefix patterns: {string.Join(", ", prefixPatterns.Select(p => $"'{p}'"))}");
+                }
+                
+                // TIERED STRATEGY (Fast to Slow):
+                // 1. EXACT PREFIX MATCH: Look up terms starting with prefix patterns (FAST, HIGH QUALITY)
+                // 2. FUZZY FALLBACK: If not enough results, add terms containing query chars (SLOWER, LOWER QUALITY)
+                
+                int termsScanned = 0, exactMatched = 0, fuzzyMatched = 0;
+                Dictionary<long, int> docScores = new Dictionary<long, int>();
+                
+                // PHASE 1: Exact prefix matching (HIGH PRIORITY - score * 10)
+                foreach (var term in _vectorModel.TermCollection.GetAllTerms())
+                {
+                    termsScanned++;
+                    
+                    if (term.Text == null)
+                        continue;
+                    
+                    // Check if term starts with any of our prefix patterns
+                    bool exactMatch = false;
+                    foreach (string pattern in prefixPatterns)
+                    {
+                        if (term.Text.StartsWith(pattern))
+                        {
+                            exactMatch = true;
+                            break;
+                        }
+                    }
+                    
+                    if (exactMatch)
+                    {
+                        exactMatched++;
+                        var docIds = term.GetDocumentIds();
+                        var weights = term.GetWeights();
+                        
+                        if (docIds != null && weights != null)
+                        {
+                            for (int i = 0; i < docIds.Count; i++)
+                            {
+                                int internalId = docIds[i];
+                                byte weight = weights[i];
+                                
+                                Document? doc = _vectorModel.Documents.GetDocument(internalId);
+                                if (doc != null && !doc.Deleted)
+                                {
+                                    // Exact matches get 10x score boost
+                                    int score = weight * 10;
+                                    
+                                    if (docScores.ContainsKey(doc.DocumentKey))
+                                    {
+                                        docScores[doc.DocumentKey] += score;
+                                    }
+                                    else
+                                    {
+                                        docScores[doc.DocumentKey] = score;
+                                        matchedDocs.Add(doc.DocumentKey);
+                                    }
+
+                                    // Record whether this document's first token
+                                    // starts with the short query prefix.
+                                    // We evaluate this once per document and
+                                    // reuse it at normalization time.
+                                    if (!firstTokenPrefixDocs.Contains(doc.DocumentKey))
+                                    {
+                                        string titleLower = doc.IndexedText.ToLowerInvariant();
+                                        // First token starts with the query prefix
+                                        if (titleLower.StartsWith(searchLower, StringComparison.Ordinal))
+                                        {
+                                            firstTokenPrefixDocs.Add(doc.DocumentKey);
+                                        }
+                                    }
+                                    
+                                    if (bestSegments.Height > 0 && internalId < bestSegments.Height)
+                                    {
+                                        int baseId = internalId - doc.SegmentNumber;
+                                        if (baseId >= 0 && baseId < bestSegments.Height)
+                                        {
+                                            bestSegments[baseId, 0] = (byte)doc.SegmentNumber;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                
+                // PHASE 2: Fuzzy fallback if we don't have enough results
+                // For fuzzy matching, prioritize n-grams where query chars appear near word boundaries
+                if (matchedDocs.Count < maxResults)
+                {
+                    foreach (var term in _vectorModel.TermCollection.GetAllTerms())
+                    {
+                        if (term.Text == null)
+                            continue;
+                        
+                        // Skip if already matched as exact prefix
+                        bool alreadyMatched = false;
+                        foreach (string pattern in prefixPatterns)
+                        {
+                            if (term.Text.StartsWith(pattern))
+                            {
+                                alreadyMatched = true;
+                                break;
+                            }
+                        }
+                        
+                        if (alreadyMatched)
+                            continue;
+                        
+                        // FUZZY MATCH: Look for query chars at word boundaries or early positions
+                        // Examples for query "a":
+                        //   - " a*" (word starting with 'a') - GOOD
+                        //   - "^a*" (document starting with 'a') - GOOD  
+                        //   - "*a*" (contains 'a' anywhere) - FALLBACK only if needed
+                        
+                        bool hasWordBoundaryMatch = false;
+                        int charMatchCount = 0;
+                        
+                        foreach (char qChar in searchLower)
+                        {
+                            // Check if char appears at word boundary
+                            string wordBoundaryPattern = " " + qChar;
+                            if (term.Text.Contains(wordBoundaryPattern))
+                            {
+                                hasWordBoundaryMatch = true;
+                                charMatchCount++;
+                            }
+                            else if (term.Text.Contains(qChar))
+                            {
+                                charMatchCount++;
+                            }
+                        }
+                        
+                        // Only add fuzzy matches that have word boundary matches OR contain any query chars
+                        bool shouldAdd = hasWordBoundaryMatch || (charMatchCount > 0);
+                        
+                        if (shouldAdd)
+                        {
+                            fuzzyMatched++;
+                            var docIds = term.GetDocumentIds();
+                            var weights = term.GetWeights();
+                            
+                            if (docIds != null && weights != null)
+                            {
+                                for (int i = 0; i < docIds.Count; i++)
+                                {
+                                    int internalId = docIds[i];
+                                    byte weight = weights[i];
+                                    
+                                    Document? doc = _vectorModel.Documents.GetDocument(internalId);
+                                    if (doc != null && !doc.Deleted)
+                                    {
+                                        // Word boundary matches get small boost
+                                        int score = hasWordBoundaryMatch ? weight * 2 : weight;
+                                        
+                                        if (docScores.ContainsKey(doc.DocumentKey))
+                                        {
+                                            docScores[doc.DocumentKey] += score;
+                                        }
+                                        else
+                                        {
+                                            docScores[doc.DocumentKey] = score;
+                                            matchedDocs.Add(doc.DocumentKey);
+                                        }
+
+                                        // Also propagate the first-token-prefix
+                                        // flag for docs discovered via fuzzy
+                                        // fallback, to keep precedence rules
+                                        // consistent across both phases.
+                                        if (!firstTokenPrefixDocs.Contains(doc.DocumentKey))
+                                        {
+                                            string titleLower = doc.IndexedText.ToLowerInvariant();
+                                            if (titleLower.StartsWith(searchLower, StringComparison.Ordinal))
+                                            {
+                                                firstTokenPrefixDocs.Add(doc.DocumentKey);
+                                            }
+                                        }
+                                        
+                                        if (bestSegments.Height > 0 && internalId < bestSegments.Height)
+                                        {
+                                            int baseId = internalId - doc.SegmentNumber;
+                                            if (baseId >= 0 && baseId < bestSegments.Height)
+                                            {
+                                                bestSegments[baseId, 0] = (byte)doc.SegmentNumber;
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                
+                // Build final score array with proper normalization and a clear
+                // precedence rule for short queries driven purely by lexical
+                // structure (no data-tuned weights).
+                // Precedence tiers:
+                //   1) Title equals query (e.g., "IO" for "io")
+                //   2) First token equals query
+                //   3) Any token equals query
+                //   4) First token starts with query prefix
+                //   5) Others, ranked by normalized docScores
+                // Find max score to normalize
+                int maxScore = 0;
+                foreach (var score in docScores.Values)
+                {
+                    if (score > maxScore)
+                        maxScore = score;
+                }
+                
+                // Normalize scores to 0-255 range, preserving relative differences,
+                // then add lexical precedence bits in the high byte.
+                char[] shortDelimiters = _vectorModel.Tokenizer.TokenizerSetup?.Delimiters ?? new[] { ' ' };
+                
+                if (maxScore > 0)
+                {
+                    foreach (var kvp in docScores)
+                    {
+                        // Scale score to fit in byte range while preserving ranking
+                        byte normalizedScore = (byte)Math.Min(255, (kvp.Value * 255L) / maxScore);
+
+                        Document? doc = _vectorModel.Documents.GetDocumentByPublicKey(kvp.Key);
+                        if (doc == null || doc.Deleted)
+                            continue;
+                        
+                        string titleLower = doc.IndexedText.ToLowerInvariant();
+                        string trimmedTitle = titleLower.Trim();
+                        string[] words = titleLower.Split(shortDelimiters, StringSplitOptions.RemoveEmptyEntries);
+                        
+                        bool anyTokenExact = false;
+                        bool firstTokenExact = false;
+                        if (words.Length > 0)
+                        {
+                            firstTokenExact = string.Equals(words[0], searchLower, StringComparison.Ordinal);
+                            if (firstTokenExact)
+                            {
+                                anyTokenExact = true;
+                            }
+                            else
+                            {
+                                for (int i = 0; i < words.Length; i++)
+                                {
+                                    if (string.Equals(words[i], searchLower, StringComparison.Ordinal))
+                                    {
+                                        anyTokenExact = true;
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                        
+                        bool titleEqualsQuery = string.Equals(trimmedTitle, searchLower, StringComparison.Ordinal);
+                        bool firstTokenStartsWithPrefix = firstTokenPrefixDocs.Contains(kvp.Key);
+                        
+                        int precedence = 0;
+                        // Bit layout (high to low importance):
+                        //  3: titleEqualsQuery
+                        //  2: firstTokenExact
+                        //  1: firstTokenStartsWithPrefix
+                        //  0: anyTokenExact (elsewhere in title)
+                        if (anyTokenExact) precedence |= 1;
+                        if (firstTokenStartsWithPrefix) precedence |= 2;
+                        if (firstTokenExact) precedence |= 4;
+                        if (titleEqualsQuery) precedence |= 8;
+                        
+                        ushort finalScore = (ushort)((precedence << 8) | normalizedScore);
+
+                        relevancyScores.Add(kvp.Key, finalScore);
+                    }
+                }
+                else
+                {
+                    foreach (var kvp in docScores)
+                    {
+                        byte baseScore = (byte)Math.Min(255, kvp.Value);
+                        
+                        Document? doc = _vectorModel.Documents.GetDocumentByPublicKey(kvp.Key);
+                        if (doc == null || doc.Deleted)
+                            continue;
+                        
+                        string titleLower = doc.IndexedText.ToLowerInvariant();
+                        string trimmedTitle = titleLower.Trim();
+                        string[] words = titleLower.Split(shortDelimiters, StringSplitOptions.RemoveEmptyEntries);
+                        
+                        bool anyTokenExact = false;
+                        bool firstTokenExact = false;
+                        if (words.Length > 0)
+                        {
+                            firstTokenExact = string.Equals(words[0], searchLower, StringComparison.Ordinal);
+                            if (firstTokenExact)
+                            {
+                                anyTokenExact = true;
+                            }
+                            else
+                            {
+                                for (int i = 0; i < words.Length; i++)
+                                {
+                                    if (string.Equals(words[i], searchLower, StringComparison.Ordinal))
+                                    {
+                                        anyTokenExact = true;
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                        
+                        bool titleEqualsQuery = string.Equals(trimmedTitle, searchLower, StringComparison.Ordinal);
+                        bool firstTokenStartsWithPrefix = firstTokenPrefixDocs.Contains(kvp.Key);
+                        
+                        int precedence = 0;
+                        if (anyTokenExact) precedence |= 1;
+                        if (firstTokenStartsWithPrefix) precedence |= 2;
+                        if (firstTokenExact) precedence |= 4;
+                        if (titleEqualsQuery) precedence |= 8;
+                        
+                        ushort finalScore = (ushort)((precedence << 8) | baseScore);
+
+                        relevancyScores.Add(kvp.Key, finalScore);
+                    }
+                }
+                
+                if (EnableDebugLogging)
+                {
+                    Console.WriteLine($"[DEBUG] Short query results: scanned={termsScanned} terms, exactMatched={exactMatched}, fuzzyMatched={fuzzyMatched}, results={matchedDocs.Count} docs");
+                }
+            }
+            else
+            {
+                // Use normal n-gram search. For mixed queries we only pass the strong terms
+                // (e.g., \"san\"), because short terms are handled via precedence bits.
+                string tfidfQuery = hasMixedTerms ? longWordsSearchText : searchText;
+                if (string.IsNullOrWhiteSpace(tfidfQuery))
+                {
+                    tfidfQuery = searchText;
+                }
+                relevancyScores = _vectorModel.Search(tfidfQuery, bestSegments, queryIndex: 0);
+            }
+
             if (perfStopwatch != null)
             {
                 tfidfMs = perfStopwatch.ElapsedMilliseconds - tfidfStart;
@@ -499,8 +970,9 @@ public class SearchEngine : IDisposable
                 }
             }
             
-            // If coverage is disabled, consolidate segments and return
-            if (_coverageEngine == null || coverageSetup == null)
+            // Skip coverage stage if disabled OR query is too short for n-grams.
+            // - Short queries use prefix matching which is already lexical
+            if (_coverageEngine == null || coverageSetup == null || !canUseNGrams)
             {
                 ScoreArray consolidated = ConsolidateSegments(relevancyScores, bestSegments);
                 return consolidated.GetAll();
@@ -606,21 +1078,18 @@ public class SearchEngine : IDisposable
                             }
                         }
 
-                        // FAST PATH: Use optimized CalculateRankedScore
-                        ushort finalScore = _coverageEngine.CalculateRankedScore(
-                            searchText,
-                            docText,
-                            lcsFromSpan,
-                            (byte)0, // WordMatcher results have no base TF-IDF score (use 0)
-                            out int wordHits
-                        );
+                        // Calculate features for principled scoring
+                        var features = _coverageEngine.CalculateFeatures(searchText, docText, lcsFromSpan);
+                        
+                        // WordMatcher hits have base score 0 (or we could assume they are good matches, but we rely on features)
+                        ushort finalScore = CalculateFusionScore(searchText, docText, features, 0f);
 
                         if (docIndex < lcsAndWordHitsSpan.Height && lcsAndWordHitsSpan[1, docIndex] == 0)
                         {
-                            lcsAndWordHitsSpan[1, docIndex] = (byte)Math.Min(wordHits, 255);
+                            lcsAndWordHitsSpan[1, docIndex] = (byte)Math.Min(features.WordHits, 255);
                         }
 
-                        maxWordHits = Math.Max(maxWordHits, wordHits);
+                        maxWordHits = Math.Max(maxWordHits, features.WordHits);
 
                         if (EnableDebugLogging)
                         {
@@ -665,21 +1134,17 @@ public class SearchEngine : IDisposable
                             }
                         }
 
-                        // FAST PATH: Use optimized CalculateRankedScore
-                        ushort finalScore = _coverageEngine.CalculateRankedScore(
-                            searchText,
-                            docText,
-                            lcsFromSpan,
-                            (byte)candidate.Score, // Base TF-IDF score
-                            out int wordHits
-                        );
+                        // Calculate features for principled scoring
+                        var features = _coverageEngine.CalculateFeatures(searchText, docText, lcsFromSpan);
+                        
+                        ushort finalScore = CalculateFusionScore(searchText, docText, features, (float)candidate.Score / 255f);
 
                         if (docIndex < lcsAndWordHitsSpan.Height && lcsAndWordHitsSpan[1, docIndex] == 0)
                         {
-                            lcsAndWordHitsSpan[1, docIndex] = (byte)Math.Min(wordHits, 255);
+                            lcsAndWordHitsSpan[1, docIndex] = (byte)Math.Min(features.WordHits, 255);
                         }
 
-                        maxWordHits = Math.Max(maxWordHits, wordHits);
+                        maxWordHits = Math.Max(maxWordHits, features.WordHits);
                         
                         if (EnableDebugLogging)
                         {
@@ -780,6 +1245,266 @@ public class SearchEngine : IDisposable
                 SpanAlloc.Free(bestSegmentsPointer);
         }
     }
+    
+    /// <summary>
+    /// Calculates a fused score from coverage features and (optionally) BM25.
+    /// 
+    /// Design principles:
+    /// - The ordering is driven by discrete lexical structure, not tuned weights.
+    /// - Stage 2 ranking is purely lexical/information-theoretic; BM25 is used
+    ///   only to generate candidates in Stage 1.
+    /// - Precedence is lexicographic:
+    ///   1) All query terms have some evidence (completeness)
+    ///   2) Matches are clean (no fuzzy contamination)
+    ///   3) For single-term queries: exact/prefix at title start
+    ///   4) For multi-term queries: \"perfect\" title-level coverage and phrase quality
+    ///   5) Within a precedence bucket, CoverageScore is used as a smooth tie-breaker.
+    /// </summary>
+    private ushort CalculateFusionScore(
+        string queryText,
+        string documentText,
+        CoverageEngine.CoverageFeatures features,
+        float bm25Score)
+    {
+        // Tokenization for lexical reasoning (independent of coverage MinWordSize).
+        char[] delimiters = _vectorModel.Tokenizer.TokenizerSetup?.Delimiters ?? new[] { ' ' };
+        string[] queryTokensLex = queryText
+            .Split(delimiters, StringSplitOptions.RemoveEmptyEntries);
+        string[] docTokensLex = documentText
+            .Split(delimiters, StringSplitOptions.RemoveEmptyEntries);
+        
+        int rawQueryTerms = queryTokensLex.Length;
+        bool isSingleTermQuery = rawQueryTerms <= 1;
+        
+        // Tier 1: Completeness (all query terms that are large enough for coverage have some match)
+        bool allTermsFound = features.TermsCount > 0 &&
+                             features.TermsWithAnyMatch == features.TermsCount;
+        
+        // Tier 2: Cleanliness – all terms matched via Exact/Prefix (no fuzzy-only terms)
+        bool isCleanMatch = features.TermsCount > 0 &&
+                            features.TermsPrefixMatched == features.TermsCount;
+        
+        // Exact whole-word match for all (coverage Strict)
+        bool isExactMatch = features.TermsCount > 0 &&
+                            features.TermsStrictMatched == features.TermsCount;
+        
+        // Lexical "perfect document":
+        // Every document token is explained by some query token via
+        // whole-word or prefix containment in either direction.
+        bool isLexicalPerfectDoc = false;
+        if (rawQueryTerms > 0 && docTokensLex.Length > 0)
+        {
+            bool allDocWordsCovered = true;
+            for (int i = 0; i < docTokensLex.Length; i++)
+            {
+                string d = docTokensLex[i];
+                bool covered = false;
+                
+                for (int j = 0; j < rawQueryTerms; j++)
+                {
+                    string q = queryTokensLex[j];
+                    if (d.StartsWith(q, StringComparison.OrdinalIgnoreCase) ||
+                        q.StartsWith(d, StringComparison.OrdinalIgnoreCase))
+                    {
+                        covered = true;
+                        break;
+                    }
+                }
+                
+                if (!covered)
+                {
+                    allDocWordsCovered = false;
+                    break;
+                }
+            }
+            
+            isLexicalPerfectDoc = allDocWordsCovered;
+        }
+        
+        bool startsAtBeginning = features.FirstMatchIndex == 0;
+        
+        int precedence = 0;
+        
+        // Bit 7: all (coverage-eligible) terms have some match
+        if (allTermsFound)
+        {
+            precedence |= 128;
+        }
+        
+        // Bit 6: clean vs noisy (no fuzzy-only terms)
+        if (isCleanMatch && features.TermsCount > 0)
+        {
+            precedence |= 64;
+        }
+        
+        // Special handling for two-term queries with a very short second token
+        // (e.g., "san a"). For these, we distinguish between:
+        //  - strict bigram prefixes like "San Andreas" (first word == q0, second starts with q1)
+        //  - looser matches like "Sandeep Aur ..." (both words just start with "san"/"a")
+        bool isTwoTermShortSecond = rawQueryTerms == 2 &&
+                                    queryTokensLex[1].Length < (_coverageSetup?.MinWordSize ?? 2);
+        bool hasBigramPrefix = false;
+        bool strictShortBigram = false;
+        if (rawQueryTerms >= 2 && docTokensLex.Length >= 2)
+        {
+            string q0 = queryTokensLex[0];
+            string q1 = queryTokensLex[1];
+            string d0 = docTokensLex[0];
+            string d1 = docTokensLex[1];
+            
+            bool firstMatches = d0.StartsWith(q0, StringComparison.OrdinalIgnoreCase) ||
+                                q0.StartsWith(d0, StringComparison.OrdinalIgnoreCase);
+            bool secondMatches = d1.StartsWith(q1, StringComparison.OrdinalIgnoreCase) ||
+                                 q1.StartsWith(d1, StringComparison.OrdinalIgnoreCase);
+            
+            hasBigramPrefix = firstMatches && secondMatches;
+            
+            if (isTwoTermShortSecond)
+            {
+                // Strict version: first token must be exactly the first query term
+                // (e.g., "San"), second must start with the short trailing term.
+                strictShortBigram =
+                    d0.Equals(q0, StringComparison.OrdinalIgnoreCase) &&
+                    d1.StartsWith(q1, StringComparison.OrdinalIgnoreCase);
+            }
+        }
+        
+        if (isSingleTermQuery)
+        {
+            // Single-term behavior ("star", "sap", "matrix", etc.):
+            //  - Prefer titles whose FIRST token has an exact or prefix match
+            //    for the query term.
+            //  - Within those, ordering is:
+            //      1) Exact whole-word AND starts at beginning ("Star Kid", "SAP")
+            //      2) Prefix AND starts at beginning ("Sapphire", "Sapoot")
+            //      3) Exact but not at beginning ("Lone Star", "Mae Martin SAP")
+            //      4) Other clean matches (substring, prefix in later tokens)
+            if (startsAtBeginning && allTermsFound)
+            {
+                if (isExactMatch)
+                {
+                    // Exact + starts-with: strongest single-term signal.
+                    precedence |= 32;
+                }
+                else if (isCleanMatch)
+                {
+                    // Prefix (or equivalent clean) at the beginning of title.
+                    // This should outrank later-position exact matches.
+                    precedence |= 24; // > 16 (non-start exact)
+                }
+            }
+            else if (allTermsFound)
+            {
+                if (isExactMatch)
+                {
+                    // Exact but not at beginning: strong, but below any
+                    // "starts with" titles.
+                    precedence |= 16;
+                }
+            }
+        }
+        else
+        {
+            // Multi-term behavior:
+            // Within (allTermsFound, clean/noisy) tiers, we prefer:
+            //  1) Lexically perfect documents (every doc token supported by query)
+            //  2) Strong suffix phrase (longest clean run at end of query)
+            //  3) Overall phrase quality (longest clean run anywhere)
+            //  4) Compactness (smaller phraseSpan -> tighter phrase)
+            
+            int suffixRun = features.SuffixPrefixRun;
+            int longestRun = features.LongestPrefixRun;
+            int span = features.PhraseSpan;
+            
+            // For short-second two-term queries we treat a strict bigram prefix
+            // (q0, q1) -> (d0, d1) as the strongest signal, and we *do not*
+            // treat bag-of-words coverage as perfect in that regime.
+            bool useLexicalPerfectDoc = !isTwoTermShortSecond && isLexicalPerfectDoc;
+            
+            if (isTwoTermShortSecond)
+            {
+                // Bit 5: Exact bigram at title start, with no extra leading words.
+                if (strictShortBigram)
+                {
+                    if (docTokensLex.Length == rawQueryTerms)
+                    {
+                        // Pure "San Andreas" beats "San Andreas Quake" and others.
+                        precedence |= 32;
+                    }
+                    else
+                    {
+                        // Still very strong, but slightly below the minimal title.
+                        precedence |= 16;
+                    }
+                }
+            }
+            else
+            {
+                // General multi-term behavior:
+                // Bit 5: Lexical perfect document – strongest general signal.
+                if (useLexicalPerfectDoc)
+                {
+                    precedence |= 32;
+                }
+                // Bit 4: Strong suffix phrase (covers all or all-but-one tokens)
+                if (suffixRun >= Math.Max(2, Math.Min(features.TermsCount, rawQueryTerms) - 1))
+                {
+                    precedence |= 16;
+                }
+                // Bit 3: Moderate suffix phrase (at least 2 clean suffix tokens)
+                else if (suffixRun >= 2)
+                {
+                    precedence |= 8;
+                }
+                
+                // Bit 2: Strong overall phrase run (longest clean run >= 3)
+                if (longestRun >= 3)
+                {
+                    precedence |= 4;
+                }
+                else if (longestRun >= 2)
+                {
+                    // Weaker phrase, but still better than isolated tokens
+                    precedence |= 2;
+                }
+                
+                // Bit 1: Compact phrase span (matched terms are adjacent in the document).
+                // For at least two matched terms, span == 2 means the phrase is tight.
+                if (features.TermsWithAnyMatch >= 2 && span == 2)
+                {
+                    precedence |= 1;
+                }
+            }
+        }
+        
+        // Semantic tie-breaker within precedence tiers:
+        // use an information-theoretic style signal:
+        //   - avgCi = average per-term coverage (how well each query token is covered)
+        //   - docCoverage = WordHits / DocTokenCount (how concentrated coverage is in the title)
+        // For multi-term queries we use avgCi * docCoverage, which naturally prefers
+        // shorter, cleaner titles (e.g., "The Matrix") over longer noisy variants
+        // (e.g., "The Matrix Resurrections") when they explain the same query.
+        float avgCi = (features.TermsCount > 0)
+            ? features.SumCi / features.TermsCount
+            : 0f;
+        float semantic;
+        if (isSingleTermQuery || features.DocTokenCount == 0)
+        {
+            semantic = avgCi;
+        }
+        else
+        {
+            float docCoverage = features.DocTokenCount > 0
+                ? (float)features.WordHits / features.DocTokenCount
+                : 0f;
+            semantic = avgCi * docCoverage;
+        }
+        
+        byte semanticScore = (byte)Math.Clamp(semantic * 255f, 0, 255);
+        
+        return (ushort)((precedence << 8) | semanticScore);
+    }
+    
     
     /// <summary>
     /// Looks up fuzzy word matches (exact, LD1, affix) using the WordMatcher.
@@ -941,6 +1666,166 @@ public class SearchEngine : IDisposable
         }
 
         return docText;
+    }
+    
+    /// <summary>
+    /// Specialized ranking for single-character queries (e.g., "a", "s").
+    /// Uses a direct lexical scan over all titles to avoid pathologies where
+    /// long documents with many occurrences of the character dominate purely
+    /// by raw term frequency in the n-gram index.
+    /// </summary>
+    private ScoreEntry[] SearchSingleCharacterQuery(char ch, Span2D<byte> bestSegments, int queryIndex, int maxResults)
+    {
+        ch = char.ToLowerInvariant(ch);
+        
+        var docs = _vectorModel.Documents.GetAllDocuments();
+        ScoreArray scores = new ScoreArray();
+        
+        char[] delimiters = _vectorModel.Tokenizer.TokenizerSetup?.Delimiters ?? new[] { ' ' };
+        
+        foreach (Document doc in docs)
+        {
+            if (doc.Deleted)
+                continue;
+            
+            string text = doc.IndexedText ?? string.Empty;
+            if (text.Length == 0)
+                continue;
+            
+            string lower = text.ToLowerInvariant();
+            
+            // Count occurrences and find earliest character position
+            int charCount = 0;
+            int firstCharIndex = -1;
+            for (int i = 0; i < lower.Length; i++)
+            {
+                if (lower[i] == ch)
+                {
+                    charCount++;
+                    if (firstCharIndex == -1)
+                        firstCharIndex = i;
+                }
+            }
+            
+            if (charCount == 0)
+                continue;
+            
+            // Tokenize into words to detect word starts
+            string[] words = lower.Split(delimiters, StringSplitOptions.RemoveEmptyEntries);
+            bool hasWordStart = false;
+            int firstWordIndex = int.MaxValue;
+            int wordStartCount = 0;
+            
+            for (int i = 0; i < words.Length; i++)
+            {
+                string w = words[i];
+                if (w.Length > 0 && w[0] == ch)
+                {
+                    hasWordStart = true;
+                    wordStartCount++;
+                    if (i < firstWordIndex)
+                        firstWordIndex = i;
+                }
+            }
+            
+            bool anyExactToken = false;
+            bool firstTokenExact = false;
+            if (words.Length > 0)
+            {
+                firstTokenExact = words[0].Length == 1 && words[0][0] == ch;
+                if (firstTokenExact)
+                {
+                    anyExactToken = true;
+                }
+                else
+                {
+                    for (int i = 0; i < words.Length; i++)
+                    {
+                        if (words[i].Length == 1 && words[i][0] == ch)
+                        {
+                            anyExactToken = true;
+                            break;
+                        }
+                    }
+                }
+            }
+            
+            bool titleEqualsChar = lower.Length == 1 && lower[0] == ch;
+            
+            int precedence = 0;
+            if (hasWordStart)
+            {
+                precedence |= 128; // any word starts with the character
+                if (firstWordIndex == 0)
+                {
+                    precedence |= 64; // title starts with that character
+                }
+            }
+            if (anyExactToken)
+            {
+                precedence |= 32; // has a single-character token 'x'
+            }
+            if (firstTokenExact)
+            {
+                precedence |= 16; // first token is exactly 'x'
+            }
+            if (titleEqualsChar)
+            {
+                precedence |= 8; // whole title is exactly 'x' (strongest)
+            }
+            
+            // Prefer shorter titles when everything else is equal
+            int wordCount = words.Length;
+            if (wordCount <= 3)
+            {
+                precedence |= 32;
+            }
+            
+            byte baseScore;
+            if (hasWordStart)
+            {
+                // Earlier word index and more word-start matches are better.
+                int posComponent = 255 - Math.Min(firstWordIndex * 16, 240); // 0 -> 255, 1 -> 239, ...
+                int densityComponent = Math.Min(wordStartCount * 8, 32);
+                int raw = Math.Clamp(posComponent + densityComponent, 0, 255);
+                baseScore = (byte)raw;
+            }
+            else
+            {
+                // Fallback: contains the character but not at word start.
+                int posComponent = 200 - Math.Min(Math.Max(firstCharIndex, 0) * 4, 180);
+                int densityComponent = Math.Min(charCount * 4, 40);
+                int raw = Math.Clamp(posComponent + densityComponent, 0, 200);
+                baseScore = (byte)Math.Max(1, raw);
+            }
+            
+            ushort finalScore = (ushort)((precedence << 8) | baseScore);
+            scores.Add(doc.DocumentKey, finalScore);
+            
+            // Track best segment: simply mark the current segment as best for its base.
+            if (bestSegments.Height > 0 && bestSegments.Width > 0)
+            {
+                int internalId = doc.Id;
+                int segmentNumber = doc.SegmentNumber;
+                int baseId = internalId - segmentNumber;
+                
+                if (baseId >= 0 && baseId < bestSegments.Height &&
+                    queryIndex >= 0 && queryIndex < bestSegments.Width)
+                {
+                    bestSegments[baseId, queryIndex] = (byte)segmentNumber;
+                }
+            }
+        }
+        
+        ScoreArray consolidated = ConsolidateSegments(scores, bestSegments);
+        ScoreEntry[] all = consolidated.GetAll();
+        
+        if (maxResults < int.MaxValue && all.Length > maxResults)
+        {
+            all = all.Take(maxResults).ToArray();
+        }
+        
+        return all;
     }
     
     /// <summary>
@@ -1195,7 +2080,7 @@ public class SearchEngine : IDisposable
     /// Apply filter to search results using bytecode VM.
     /// Also computes NumberOfDocumentsInFilter by checking against all documents.
     /// </summary>
-    private ScoreEntry[] ApplyFilter(ScoreEntry[] results, Api.Filter filter)
+    private ScoreEntry[] ApplyFilter(ScoreEntry[] results, Filter filter)
     {
         // Get or compile bytecode (with thread-safe caching)
         var compiled = _compiledFilterCache.GetOrAdd(filter, f => _filterCompiler.Value!.Compile(f));
@@ -1243,7 +2128,7 @@ public class SearchEngine : IDisposable
     /// compile each boost filter and check if documents match,
     /// then add boost strength to the score.
     /// </summary>
-    private ScoreEntry[] ApplyBoosts(ScoreEntry[] results, Api.Boost[] boosts)
+    private ScoreEntry[] ApplyBoosts(ScoreEntry[] results, Boost[] boosts)
     {
         if (boosts == null || boosts.Length == 0)
             return results;
@@ -1301,7 +2186,7 @@ public class SearchEngine : IDisposable
     /// <summary>
     /// Apply sorting to search results
     /// </summary>
-    private ScoreEntry[] ApplySort(ScoreEntry[] results, Api.Field sortByField, bool ascending)
+    private ScoreEntry[] ApplySort(ScoreEntry[] results, Field sortByField, bool ascending)
     {
         // Extract sort values from documents
         (ScoreEntry Entry, object? SortValue)[] withSortKeys = results.Select(r =>

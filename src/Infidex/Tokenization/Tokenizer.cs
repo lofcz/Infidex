@@ -9,8 +9,8 @@ namespace Infidex.Tokenization;
 public class Tokenizer
 {
     // Special padding characters (using Unicode private use area)
-    private const char START_PAD_CHAR = '\uFFFF';
-    private const char STOP_PAD_CHAR = '\uFFFE';
+    public const char START_PAD_CHAR = '\uFFFF';
+    public const char STOP_PAD_CHAR = '\uFFFE';
     
     /// <summary>
     /// N-gram sizes to extract (e.g., [2, 3] for 2-grams and 3-grams)
