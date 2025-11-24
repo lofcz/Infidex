@@ -7,7 +7,7 @@
         <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
         <LangVersion>preview</LangVersion>
         <GeneratePackageOnBuild>true</GeneratePackageOnBuild>
-        <Version>1.0.2</Version>
+        <Version>1.0.3</Version>
         <Title>A high-performance, hybrid search engine that combines TF-IDF vector space retrieval with multi-algorithm lexical matching.</Title>
         <Description>Infidex Search Engine
 A high-performance, hybrid search engine that combines TF-IDF vector space retrieval with multi-algorithm lexical matching.
