@@ -1,6 +1,7 @@
 using Infidex.Core;
 using Infidex.Filtering;
 using Infidex.Metrics;
+using Infidex.Tokenization;
 
 namespace Infidex.WordMatcher;
 
@@ -15,12 +16,14 @@ public sealed class WordMatcher : IDisposable
     private readonly AffixIndex? _affixIndex;
     private readonly char[] _delimiters;
     private readonly WordMatcherSetup _setup;
+    private readonly TextNormalizer? _textNormalizer;
     private bool _disposed;
     
-    public WordMatcher(WordMatcherSetup setup, char[] delimiters)
+    public WordMatcher(WordMatcherSetup setup, char[] delimiters, TextNormalizer? textNormalizer = null)
     {
         _setup = setup;
         _delimiters = delimiters;
+        _textNormalizer = textNormalizer;
         _exactIndex = new Dictionary<string, HashSet<int>>();
         _ld1Index = new Dictionary<string, HashSet<int>>();
         
@@ -51,17 +54,23 @@ public sealed class WordMatcher : IDisposable
     /// </summary>
     public void Load(string text, int docIndex)
     {
-        string[] words = text.Split(_delimiters, StringSplitOptions.RemoveEmptyEntries);
+        // Apply full normalization (including accent removal) for consistent matching
+        string normalizedText = text.ToLowerInvariant();
+        if (_textNormalizer != null)
+        {
+            normalizedText = _textNormalizer.Normalize(normalizedText);
+        }
+        
+        string[] words = normalizedText.Split(_delimiters, StringSplitOptions.RemoveEmptyEntries);
         
         foreach (string word in words)
         {
-            string normalized = word.ToLowerInvariant();
-            int length = normalized.Length;
+            int length = word.Length;
             
             // Exact word index
             if (length >= _setup.MinimumWordSizeExact && length <= _setup.MaximumWordSizeExact)
             {
-                AddToIndex(_exactIndex, normalized, docIndex);
+                AddToIndex(_exactIndex, word, docIndex);
             }
             
             // LD1 index - generate all words within edit distance 1
@@ -69,14 +78,14 @@ public sealed class WordMatcher : IDisposable
                 length >= _setup.MinimumWordSizeLD1 && 
                 length <= _setup.MaximumWordSizeLD1)
             {
-                GenerateLD1Variants(normalized, docIndex);
+                GenerateLD1Variants(word, docIndex);
             }
         }
         
         // Affix index
         if (_affixIndex != null)
         {
-            _affixIndex.LoadSentence(text.ToLowerInvariant(), docIndex);
+            _affixIndex.LoadSentence(normalizedText, docIndex);
         }
     }
     
@@ -87,6 +96,10 @@ public sealed class WordMatcher : IDisposable
     {
         HashSet<int> results = [];
         string normalized = query.ToLowerInvariant();
+        if (_textNormalizer != null)
+        {
+            normalized = _textNormalizer.Normalize(normalized);
+        }
         int length = normalized.Length;
 
         // 1. Exact match
@@ -141,7 +154,12 @@ public sealed class WordMatcher : IDisposable
     public HashSet<int> LookupAffix(string query, FilterMask? filter = null)
     {
         HashSet<int> results = [];
-        _affixIndex?.Lookup(query.ToLowerInvariant(), filter, results);
+        string normalized = query.ToLowerInvariant();
+        if (_textNormalizer != null)
+        {
+            normalized = _textNormalizer.Normalize(normalized);
+        }
+        _affixIndex?.Lookup(normalized, filter, results);
         return results;
     }
     
@@ -171,6 +189,96 @@ public sealed class WordMatcher : IDisposable
             index[word] = docs;
         }
         docs.Add(docIndex);
+    }
+
+    public void Save(BinaryWriter writer)
+    {
+        // Save Exact Index
+        writer.Write(_exactIndex.Count);
+        foreach (var kvp in _exactIndex)
+        {
+            writer.Write(kvp.Key);
+            writer.Write(kvp.Value.Count);
+            foreach (int docId in kvp.Value)
+            {
+                writer.Write(docId);
+            }
+        }
+
+        // Save LD1 Index
+        writer.Write(_ld1Index.Count);
+        foreach (var kvp in _ld1Index)
+        {
+            writer.Write(kvp.Key);
+            writer.Write(kvp.Value.Count);
+            foreach (int docId in kvp.Value)
+            {
+                writer.Write(docId);
+            }
+        }
+
+        // Save Affix Index presence
+        writer.Write(_affixIndex != null);
+        if (_affixIndex != null)
+        {
+            _affixIndex.Save(writer);
+        }
+    }
+
+    public void Load(BinaryReader reader)
+    {
+        // Load Exact Index
+        int exactCount = reader.ReadInt32();
+        for (int i = 0; i < exactCount; i++)
+        {
+            string key = reader.ReadString();
+            int docCount = reader.ReadInt32();
+            HashSet<int> docs = new HashSet<int>(docCount);
+            for (int j = 0; j < docCount; j++)
+            {
+                docs.Add(reader.ReadInt32());
+            }
+            _exactIndex[key] = docs;
+        }
+
+        // Load LD1 Index
+        int ld1Count = reader.ReadInt32();
+        for (int i = 0; i < ld1Count; i++)
+        {
+            string key = reader.ReadString();
+            int docCount = reader.ReadInt32();
+            HashSet<int> docs = new HashSet<int>(docCount);
+            for (int j = 0; j < docCount; j++)
+            {
+                docs.Add(reader.ReadInt32());
+            }
+            _ld1Index[key] = docs;
+        }
+
+        // Load Affix Index
+        bool hasAffixIndex = reader.ReadBoolean();
+        if (hasAffixIndex && _affixIndex != null)
+        {
+            _affixIndex.Load(reader);
+        }
+        else if (hasAffixIndex && _affixIndex == null)
+        {
+            // Index has affix data but we don't have an affix index set up.
+            // We need to skip the data.
+            // AffixIndex.Save writes Count (int) then for each: String, Count (int), ints...
+            // This is hard to skip without implementing a Skip logic or creating a dummy AffixIndex.
+            // For now, assume setup consistency or read and discard.
+            int count = reader.ReadInt32();
+            for (int i = 0; i < count; i++)
+            {
+                reader.ReadString(); // key
+                int docCount = reader.ReadInt32();
+                for (int j = 0; j < docCount; j++)
+                {
+                    reader.ReadInt32(); // docId
+                }
+            }
+        }
     }
     
     public void Dispose()

@@ -9,8 +9,8 @@ namespace Infidex.Tokenization;
 public class Tokenizer
 {
     // Special padding characters (using Unicode private use area)
-    private const char START_PAD_CHAR = '\uFFFF';
-    private const char STOP_PAD_CHAR = '\uFFFE';
+    public const char START_PAD_CHAR = '\uFFFF';
+    public const char STOP_PAD_CHAR = '\uFFFE';
     
     /// <summary>
     /// N-gram sizes to extract (e.g., [2, 3] for 2-grams and 3-grams)
@@ -92,10 +92,11 @@ public class Tokenizer
             words = text.Split(TokenizerSetup.Delimiters, StringSplitOptions.RemoveEmptyEntries);
         }
         
-        // Apply normalization
+        // Apply full normalization for search (same as indexing) to enable accent-insensitive matching.
+        // This ensures "sciozl" matches "scioškolazlín" because both get normalized to "scioskola zlin".
         if (TextNormalizer != null)
         {
-            text = TextNormalizer.ReplaceStrings(text);
+            text = TextNormalizer.Normalize(text);
         }
         
         // Handle high-resolution mode
@@ -258,6 +259,30 @@ public class Tokenizer
             if (word.Length >= minWordSize)
             {
                 result.Add(word.ToLowerInvariant());
+            }
+        }
+        
+        return result;
+    }
+
+    /// <summary>
+    /// Gets word tokens with their positions for coverage calculations.
+    /// Returns a list of (Word, Position) tuples.
+    /// </summary>
+    public List<(string Word, int Position)> GetWordTokensWithPositions(string text, int minWordSize)
+    {
+        if (TokenizerSetup == null)
+            return [];
+        
+        string[] words = text.Split(TokenizerSetup.Delimiters, StringSplitOptions.RemoveEmptyEntries);
+        List<(string Word, int Position)> result = new();
+        
+        for (int i = 0; i < words.Length; i++)
+        {
+            string word = words[i];
+            if (word.Length >= minWordSize)
+            {
+                result.Add((word.ToLowerInvariant(), i));
             }
         }
         

@@ -236,6 +236,67 @@ public class SegmentTrackingTests
     }
     
     [TestMethod]
+    public void RemoveDeletedDocuments_CompactsCollectionAndLookups()
+    {
+        var collection = new DocumentCollection();
+        
+        // Two keys, first one will be deleted
+        var d1 = collection.AddDocument(CreateDoc(1L, 0, "Doc 1", ""));
+        var d2 = collection.AddDocument(CreateDoc(2L, 0, "Doc 2", ""));
+        var d3 = collection.AddDocument(CreateDoc(3L, 0, "Doc 3", ""));
+        
+        // Mark key 2 as deleted
+        collection.DeleteDocumentsByKey(2L);
+        
+        // Physically remove deleted docs and compact IDs / lookups
+        collection.RemoveDeletedDocuments();
+        
+        // Only keys 1 and 3 should remain
+        var all = collection.GetAllDocuments();
+        Assert.AreEqual(2, all.Count);
+        CollectionAssert.AreEquivalent(
+            new long[] { 1L, 3L },
+            all.Select(d => d.DocumentKey).ToArray());
+        
+        // Remaining documents should have dense, zero-based Ids
+        Assert.AreEqual(0, all[0].Id);
+        Assert.AreEqual(1, all[1].Id);
+        
+        // Lookups should reflect the new state
+        Assert.AreEqual(0, collection.GetDocumentsByKey(2L).Count); // deleted key
+        Assert.AreEqual(1, collection.GetDocumentsByKey(1L).Count);
+        Assert.AreEqual(1, collection.GetDocumentsByKey(3L).Count);
+    }
+    
+    [TestMethod]
+    public void RemoveDeletedDocuments_CompactsSegmentedDocumentIds()
+    {
+        var collection = new DocumentCollection();
+        
+        // Segmented document for key 1
+        collection.AddDocument(CreateDoc(1L, 0, "Seg 0", ""));
+        collection.AddDocument(CreateDoc(1L, 1, "Seg 1", ""));
+        collection.AddDocument(CreateDoc(1L, 2, "Seg 2", ""));
+        
+        // Non-segmented document for key 2
+        collection.AddDocument(CreateDoc(2L, 0, "Other doc", ""));
+        
+        // Delete the segmented document
+        collection.DeleteDocumentsByKey(1L);
+        collection.RemoveDeletedDocuments();
+        
+        // Only key 2 should remain
+        var remaining = collection.GetAllDocuments();
+        Assert.AreEqual(1, remaining.Count);
+        Assert.AreEqual(2L, remaining[0].DocumentKey);
+        Assert.AreEqual(0, remaining[0].Id); // compacted to first position
+        
+        // Segment lookups for key 1 should be empty
+        Assert.AreEqual(0, collection.GetDocumentsForPublicKey(1L).Count);
+        Assert.IsNull(collection.GetDocumentOfSegment(1L, 0));
+    }
+    
+    [TestMethod]
     public void SegmentContinuation_TokenizerSkipsStartPadding()
     {
         var tokenizer = new Tokenization.Tokenizer(

@@ -45,7 +45,18 @@ public class TermCollection
     /// </summary>
     public Term CountTermUsage(string termText, int stopTermLimit, bool forFastInsert = false)
     {
+        return CountTermUsage(termText, stopTermLimit, forFastInsert, out _);
+    }
+    
+    /// <summary>
+    /// Counts term usage in the corpus and returns the term, creating it if necessary.
+    /// The <paramref name="isNewTerm"/> parameter indicates whether a new term was created.
+    /// Thread-safe if <see cref="DoLock"/> is enabled.
+    /// </summary>
+    public Term CountTermUsage(string termText, int stopTermLimit, bool forFastInsert, out bool isNewTerm)
+    {
         bool shouldLock = _doLock;
+        isNewTerm = false;
         
         try
         {
@@ -56,6 +67,7 @@ public class TermCollection
             {
                 term = new Term(termText);
                 _termDictionary.Add(termText, term);
+                isNewTerm = true;
                 
                 // Initial usage count
                 term.IncrementTermUsageCounter(stopTermLimit);
