@@ -61,7 +61,7 @@ public class DocumentCollection
             foreach (int id in ids)
             {
                 Document? doc = GetDocument(id);
-                if (doc != null && !doc.Deleted)
+                if (doc is { Deleted: false })
                     results.Add(doc);
             }
         }
@@ -113,22 +113,78 @@ public class DocumentCollection
     }
     
     /// <summary>
-    /// Removes deleted documents from the collection
+    /// Physically removes all documents marked as <see cref="Document.Deleted"/> and
+    /// compacts internal IDs and key lookups.
     /// </summary>
+    /// <remarks>
+    /// - Builds a new compacted list of documents containing only non-deleted entries.
+    /// - Reassigns <see cref="Document.Id"/> to be dense and zero-based.
+    /// - Rebuilds the <c>DocumentKey</c> → internal ID lookup, preserving alias support.
+    /// </remarks>
     public void RemoveDeletedDocuments()
     {
-        // In a production system, this would compact the collection
-        // For now, we just mark them deleted
-        foreach (Document doc in _documents)
+        // Find the first deleted document index.
+        int firstDeletedIndex = -1;
+        for (int i = 0; i < _documents.Count; i++)
         {
+            if (_documents[i].Deleted)
+            {
+                firstDeletedIndex = i;
+                break;
+            }
+        }
+
+        if (firstDeletedIndex == -1)
+        {
+            return;
+        }
+
+        List<Document> compacted = new List<Document>(_documents.Count);
+        Dictionary<long, List<int>> newKeyToIds = new Dictionary<long, List<int>>();
+
+        // 1. Keep all documents before the first deletion (we must repopulate the new dictionary).
+        for (int i = 0; i < firstDeletedIndex; i++)
+        {
+            Document doc = _documents[i];
+            compacted.Add(doc);
+            
+            if (!newKeyToIds.TryGetValue(doc.DocumentKey, out List<int>? ids))
+            {
+                ids = [];
+                newKeyToIds[doc.DocumentKey] = ids;
+            }
+            ids.Add(doc.Id);
+        }
+
+        // 2. Process the rest: skip deleted, renumber surviving
+        for (int i = firstDeletedIndex; i < _documents.Count; i++)
+        {
+            Document doc = _documents[i];
             if (doc.Deleted)
             {
-                // Remove from lookup
-                if (_documentKeyToIds.TryGetValue(doc.DocumentKey, out List<int>? ids))
-                {
-                    ids.Remove(doc.Id);
-                }
+                continue;
             }
+
+            // Assign new dense internal ID
+            doc.Id = compacted.Count;
+            compacted.Add(doc);
+
+            if (!newKeyToIds.TryGetValue(doc.DocumentKey, out List<int>? ids))
+            {
+                ids = [];
+                newKeyToIds[doc.DocumentKey] = ids;
+            }
+            ids.Add(doc.Id);
+        }
+
+        // 3. Swap collections
+        _documents.Clear();
+        _documents.AddRange(compacted);
+
+        _documentKeyToIds.Clear();
+        foreach (KeyValuePair<long, List<int>> kvp in newKeyToIds)
+        {
+            _documentKeyToIds[kvp.Key] = kvp.Value;
         }
     }
     

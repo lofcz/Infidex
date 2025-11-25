@@ -69,6 +69,19 @@ public class MovieExample
         SearchAndPrint(engine, new Query("Shaaawshank"));
         SearchAndPrint(engine, new Query("Shaa awashank"));
         SearchAndPrint(engine, new Query("Shaa awa shank"));
+
+        while (true)
+        {
+            Console.Write($"> ");
+            string input = Console.ReadLine();
+
+            if (input is "q" or "!q" or "quit" or "exit")
+            {
+                break;
+            }
+            
+            SearchAndPrint(engine, new Query(input));
+        }
     }
 
     private static void SearchAndPrint(SearchEngine engine, Query query)

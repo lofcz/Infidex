@@ -3,7 +3,7 @@ namespace Infidex.Core;
 /// <summary>
 /// Represents a search result entry with a score and document identifier.
 /// </summary>
-public record ScoreEntry(byte Score, long DocumentId, int? SegmentNumber = null)
+public record ScoreEntry(ushort Score, long DocumentId, int? SegmentNumber = null)
 {
     public override string ToString()
     {
