@@ -393,7 +393,9 @@ public class VectorModel
         
         // 2. Save Terms
         IEnumerable<Term> terms = _termCollection.GetAllTerms();
-        writer.Write(terms.Count());
+        
+        writer.Write(_termCollection.Count);
+        
         foreach (Term term in terms)
         {
             writer.Write(term.Text ?? string.Empty);
