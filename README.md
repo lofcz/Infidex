@@ -262,19 +262,26 @@ var query = new Query("comedy", maxResults: 20)
 
 ## How It Works
 
+Infidex uses a **data-agnostic lexicographic ranking model** that relies entirely on structural and positional properties of the match—no collection statistics (like IDF) influence the final ranking. This ensures explainable, intuitive results regardless of the corpus.
+
 ### Three-Stage Search Pipeline
 
-**Stage 1: TF-IDF Relevancy Ranking**
+**Stage 1: BM25+ Candidate Generation**
 - Tokenizes text into character n-grams (2-grams + 3-grams)
 - Builds inverted index with document frequencies
-- Calculates relevancy scores using TF-IDF with L2 normalization
-- Ultra-fast with byte-quantized weights (4x memory savings)
+- Uses **BM25+** as the information retrieval backbone with parameters $k_1 = 1.2$, $b = 0.75$, $\delta = 1.0$
+- BM25+ scoring with L2-normalized term weights:
 
-**Stage 2: Per-Term Coverage Analysis**
+$$\text{BM25+}(q, d) = \sum_{t \in q} \text{IDF}(t) \cdot \left( \frac{f(t,d) \cdot (k_1 + 1)}{f(t,d) + k_1 \cdot (1 - b + b \cdot \frac{|d|}{\text{avgdl}})} + \delta \right)$$
+
+- Ultra-fast with byte-quantized weights (4x memory savings)
+- Produces top-K candidates for Stage 2 refinement
+
+**Stage 2: Lexical Coverage Analysis**
 - Applied to top-K candidates from Stage 1
 - Tracks **per-term coverage** for each query word using 5 algorithms:
   - Exact whole-word matching
-  - Fuzzy word matching (adaptive, length-aware Levenshtein)
+  - Fuzzy word matching (adaptive Damerau-Levenshtein, max 2 edits)
   - Joined/split word detection
   - Prefix/suffix matching (prefixes weighted higher than suffixes)
   - LCS (Longest Common Subsequence) fallback when no word-level match exists
@@ -288,27 +295,95 @@ where $m_i$ is the number of matched characters for term $i$.
 
 $$C_{\text{coord}} = \frac{1}{n} \sum_{i=1}^{n} c_i$$
 
+- Extracts structural features: phrase runs, anchor token positions, lexical perfection
+
 **Stage 3: Lexicographic Score Fusion**
-- Let $Q \in [0,1]$ be the normalized match quality (max of TF-IDF and coverage scores)
-- Uses **lexicographic ordering** $(C_{\text{coord}}, \text{Prec}, Q)$:
-  1. **Coverage Tier**: Documents matching more query terms **always** outrank those matching fewer.
-  2. **Precedence Bitmask**: Context-aware signal strength model breaks ties within coverage tiers.
-     - **Bit 7 (128)**: All Terms Found
-     - **Bit 6 (64)**: All Terms Fully Matched (Whole OR Exact Prefix)
-     - **Bit 5 (32)**: Strict Whole Word (for single-term) / Perfect Doc (for multi-term)
-     - **Bit 4 (16)**: Perfect Doc (for single-term) / Strict Whole Word (for multi-term)
-     - **Bit 3 (8)**: First Match at Index 0 (Starts with query)
-     - **Bit 2 (4)**: Precise Prefix Match (Start of Token)
-  3. **Quality Score**: TF-IDF quality $Q$ breaks remaining ties.
 
-- Final score encoded as a `ushort` (16-bit):
+The final score is a **lexicographic tuple** encoded into a 16-bit `ushort`:
 
-$$\text{score} = (\text{Prec} \ll 8) \mid ((\lfloor C_{\text{coord}} \times 63 \rfloor \ll 2) \mid \lfloor Q \times 3 \rfloor)$$
+$$\text{score} = (\text{Precedence} \ll 8) + \text{Semantic}$$
 
-This ensures a deterministic ranking where:
-1. Completeness rules (Coverage)
-2. Signal strength refines (Precedence)
-3. Textual similarity differentiates (Quality)
+where:
+- **Precedence** (high byte, 8 bits): Discrete match-quality tiers
+- **Semantic** (low byte, 8 bits): Continuous similarity within a tier
+
+#### Precedence Hierarchy
+
+Documents are ranked by a **strict precedence order**—higher bits always dominate lower bits:
+
+| Bit | Value | Condition | Rationale |
+|-----|-------|-----------|-----------|
+| 7 | 128 | All query terms found in document | Completeness is paramount |
+| 6 | 64 | All terms fully matched (whole word OR exact prefix) | Clean matches beat partial |
+| 5 | 32 | **Single-term**: Strict whole-word match<br>**Multi-term**: Lexically perfect doc (every doc token explained by query) | Exact intent signal |
+| 4 | 16 | **Single-term**: Perfect doc<br>**Multi-term**: Strict whole-word match | Secondary exactness |
+| 3 | 8 | First match at position 0 (title starts with query) | Positional primacy |
+| 2 | 4 | Precise prefix match (query is prefix of token) | Partial but anchored |
+
+#### Semantic Score
+
+The semantic component provides smooth differentiation within precedence tiers:
+
+**For single-term queries:**
+
+$$S_{\text{single}} = \frac{1}{2} \cdot C_{\text{avg}} + \frac{1}{2} \cdot L_{\text{lex}}$$
+
+where $L_{\text{lex}}$ is the lexical similarity computed as:
+
+$$L_{\text{lex}} = \max\left( L_{\text{substr}}, L_{\text{prefix}}, L_{\text{fuzzy}}, L_{\text{2seg}} \right)$$
+
+- $L_{\text{substr}}$: Substring containment score (position-weighted)
+- $L_{\text{prefix}}$: Longest prefix of doc token matching suffix of query
+- $L_{\text{fuzzy}}$: Damerau-Levenshtein similarity (transpositions allowed, max 2 edits)
+- $L_{\text{2seg}}$: Two-segment alignment for concatenated queries (e.g., "sciozlín" → "scio" + "zlín")
+
+**For multi-term queries:**
+
+$$S_{\text{multi}} = \alpha \cdot C_{\text{avg}} + \beta \cdot T_{\text{tfidf}} + \gamma \cdot R_{\text{phrase}}$$
+
+where:
+- $C_{\text{avg}}$ = average per-term coverage
+- $T_{\text{tfidf}}$ = normalized TF-IDF score from Stage 1
+- $R_{\text{phrase}}$ = phrase run bonus (consecutive query terms in document order)
+- $\alpha + \beta + \gamma = 1$ (currently $\alpha = 0.4$, $\beta = 0.4$, $\gamma = 0.2$)
+
+#### Two-Segment Alignment (Single-Term Queries)
+
+For queries that appear to be concatenated words (e.g., "sciozlín" for "ScioŠkola Zlín"), Infidex detects **two-segment alignment**:
+
+Given query $q$ with $|q| \geq 6$, extract:
+- Prefix fragment: $q[0:\ell]$ where $\ell = \min(3, |q|/2)$
+- Suffix fragment: $q[|q|-\ell:|q|]$
+
+If distinct document tokens $t_i$ and $t_j$ ($i \neq j$) satisfy:
+- $t_i$ starts with or is a prefix of the prefix fragment
+- $t_j$ ends with or is a suffix of the suffix fragment
+
+Then:
+
+$$L_{\text{2seg}} = \frac{|q[0:\ell]| + |q[|q|-\ell:|q|]|}{|q|}$$
+
+#### Anchor Token Detection (Multi-Term Queries)
+
+For multi-term queries, the **first query token** acts as an anchor when:
+1. It has length ≥ 3 characters
+2. It appears as a substring in the document text
+3. There is a phrase run of ≥ 2 consecutive query terms
+
+This is a pure positional/string rule—no rarity or IDF is used.
+
+#### Final Score Encoding
+
+The 16-bit score is computed as:
+
+$$\text{score} = (\text{Prec} \ll 8) + \lfloor S \times 255 \rfloor$$
+
+where $S \in [0, 1]$ is the semantic score and $\text{Prec} \in [0, 255]$ is the precedence bitmask.
+
+This ensures:
+1. **Completeness dominates** (all terms found beats partial matches)
+2. **Match quality refines** (whole words beat prefixes beat fuzzy)
+3. **Similarity differentiates** (smooth ordering within tiers)
 
 
 ## Persistence
