@@ -322,7 +322,7 @@ $$L_{\text{lex}} = \max\left( L_{\text{substr}}, L_{\text{prefix}}, L_{\text{fuz
 - $L_{\text{substr}}$: Substring containment score (position-weighted)
 - $L_{\text{prefix}}$: Longest prefix of doc token matching suffix of query
 - $L_{\text{fuzzy}}$: Damerau-Levenshtein similarity (transpositions allowed, max 2 edits)
-- $L_{\text{2seg}}$: Two-segment alignment for concatenated queries (e.g., "sciozlín" → "scio" + "zlín")
+- $L_{\text{2seg}}$: Two-segment alignment for concatenated queries
 
 **For multi-term queries:**
 
@@ -336,7 +336,7 @@ where:
 
 #### Two-Segment Alignment (Single-Term Queries)
 
-For queries that appear to be concatenated words (e.g., "sciozlín" for "ScioŠkola Zlín"), Infidex detects **two-segment alignment**:
+For queries that appear to be concatenated words, Infidex detects **two-segment alignment**:
 
 Given query $q$ with $|q| \geq 6$, extract:
 - Prefix fragment: $q[0:\ell]$ where $\ell = \min(3, |q|/2)$
