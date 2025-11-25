@@ -26,7 +26,7 @@ public class Result
     /// <summary>
     /// Score of the last record in the result set (for pagination)
     /// </summary>
-    public byte TruncationScore { get; set; }
+    public ushort TruncationScore { get; set; }
     
     /// <summary>
     /// Indicates if the query execution timed out
@@ -59,7 +59,7 @@ public class Result
     /// Creates a result with full metadata
     /// </summary>
     public Result(ScoreEntry[] records, Dictionary<string, KeyValuePair<string, int>[]>? facets, 
-                  int truncationIndex, byte truncationScore, bool didTimeOut)
+                  int truncationIndex, ushort truncationScore, bool didTimeOut)
     {
         Records = records;
         Facets = facets;

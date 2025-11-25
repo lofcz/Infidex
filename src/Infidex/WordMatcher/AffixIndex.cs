@@ -40,7 +40,9 @@ public sealed class AffixIndex : IDisposable
         foreach (string word in words)
         {
             int length = word.Length;
-            if (length >= _minLength && length <= _maxLength)
+            // Index all words with at least minLength chars (not restricted by maxLength).
+            // The maxLength only controls the prefix/suffix lengths generated, not the word length.
+            if (length >= _minLength)
             {
                 LoadWord(word, docIndex);
             }
@@ -122,6 +124,36 @@ public sealed class AffixIndex : IDisposable
             _affixIndex[affix] = docs;
         }
         docs.Add(docIndex);
+    }
+
+    public void Save(BinaryWriter writer)
+    {
+        writer.Write(_affixIndex.Count);
+        foreach (var kvp in _affixIndex)
+        {
+            writer.Write(kvp.Key);
+            writer.Write(kvp.Value.Count);
+            foreach (int docId in kvp.Value)
+            {
+                writer.Write(docId);
+            }
+        }
+    }
+
+    public void Load(BinaryReader reader)
+    {
+        int count = reader.ReadInt32();
+        for (int i = 0; i < count; i++)
+        {
+            string key = reader.ReadString();
+            int docCount = reader.ReadInt32();
+            HashSet<int> docs = new HashSet<int>(docCount);
+            for (int j = 0; j < docCount; j++)
+            {
+                docs.Add(reader.ReadInt32());
+            }
+            _affixIndex[key] = docs;
+        }
     }
     
     public void Dispose()

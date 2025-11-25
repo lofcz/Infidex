@@ -17,18 +17,20 @@
     </ItemGroup>
 
     <ItemGroup>
-        <None Include="..\Infidex.Benchmark\movies.csv">
-            <Link>movies.csv</Link>
-            <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
-        </None>
-    </ItemGroup>
-
-    <ItemGroup>
         <Using Include="Microsoft.VisualStudio.TestTools.UnitTesting"/>
     </ItemGroup>
 
     <ItemGroup>
         <ProjectReference Include="..\Infidex\Infidex.csproj" />
+    </ItemGroup>
+
+    <ItemGroup>
+      <None Update="movies.csv">
+        <CopyToOutputDirectory>Always</CopyToOutputDirectory>
+      </None>
+      <None Update="schools.json">
+        <CopyToOutputDirectory>Always</CopyToOutputDirectory>
+      </None>
     </ItemGroup>
 
 </Project>
