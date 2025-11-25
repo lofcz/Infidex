@@ -57,7 +57,7 @@ engine.IndexDocuments(documents);
 // Search with typos - still finds matches!
 var results = engine.Search("quik fox", maxResults: 10);
 
-foreach (var result in results.Results)
+foreach (var result in results.Records)
 {
     Console.WriteLine($"Doc {result.DocumentId}: Score {result.Score}");
 }
@@ -69,31 +69,18 @@ foreach (var result in results.Results)
 using Infidex.Api;
 
 // Define fields with weights
-var fields = new DocumentFields();
-fields.AddSearchableField("title", weight: 2.0f);      // Title is more important
-fields.AddSearchableField("description", weight: 1.0f);
-fields.AddFacetableField("genre");
-fields.AddFilterableField("year");
+var matrix = new DocumentFields();
+matrix.AddField("title", "The Matrix", Weight.High);
+matrix.AddField("description", "A computer hacker learns about the true nature of reality", Weight.Low);
 
-engine.DocumentFieldSchema = fields;
+var inception = new DocumentFields();
+inception.AddField("title", "Inception", Weight.High);
+inception.AddField("description", "A thief who steals corporate secrets through dream-sharing", Weight.Low);
 
-// Index structured documents
 var movies = new[]
 {
-    new Document(1L, new Dictionary<string, object>
-    {
-        ["title"] = "The Matrix",
-        ["description"] = "A computer hacker learns about the true nature of reality",
-        ["genre"] = "Sci-Fi",
-        ["year"] = 1999
-    }),
-    new Document(2L, new Dictionary<string, object>
-    {
-        ["title"] = "Inception",
-        ["description"] = "A thief who steals corporate secrets through dream-sharing",
-        ["genre"] = "Sci-Fi",
-        ["year"] = 2010
-    })
+    new Document(1L, matrix),
+    new Document(2L, inception)
 };
 
 engine.IndexDocuments(movies);
