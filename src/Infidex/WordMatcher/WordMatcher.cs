@@ -299,4 +299,6 @@ public sealed class WordMatcher : IDisposable
         
         _disposed = true;
     }
+    
+    ~WordMatcher() => Dispose(false);
 }
