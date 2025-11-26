@@ -29,11 +29,10 @@ namespace Infidex.Indexing;
 public sealed class DepthFirstFuzzySearch
 {
     private readonly TrieNode _root = new TrieNode();
-    private int _termCount;
-    
+
     /// <summary>Number of terms indexed.</summary>
-    public int TermCount => _termCount;
-    
+    public int TermCount { get; private set; }
+
     /// <summary>
     /// Trie node for fuzzy search.
     /// Each node represents a character in the path from root.
@@ -112,7 +111,7 @@ public sealed class DepthFirstFuzzySearch
         
         current.Completions ??= [];
         current.Completions.Add((term, score, termObj));
-        _termCount++;
+        TermCount++;
     }
     
     /// <summary>
@@ -408,7 +407,7 @@ public sealed class DepthFirstFuzzySearch
     {
         _root.Children?.Clear();
         _root.Completions?.Clear();
-        _termCount = 0;
+        TermCount = 0;
     }
 }
 

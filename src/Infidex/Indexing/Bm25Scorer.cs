@@ -267,4 +267,3 @@ internal static class Bm25Scorer
         return quantizedWeights;
     }
 }
-

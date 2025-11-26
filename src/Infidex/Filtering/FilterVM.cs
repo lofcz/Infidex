@@ -42,7 +42,7 @@ public class FilterVM
             return false;
         
         object? result = _stack.Pop();
-        return result is bool b && b;
+        return result is true;
     }
     
     private void ExecuteInstruction(Instruction inst, DocumentFields document)

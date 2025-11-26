@@ -2,10 +2,12 @@ namespace Infidex.Core;
 
 /// <summary>
 /// Thread-safe collection of terms in the inverted index.
+/// Supports both string-keyed lookup and index-based access for FST integration.
 /// </summary>
 public class TermCollection
 {
     internal Dictionary<string, Term> _termDictionary;
+    private readonly List<Term> _termList; // For index-based access (FST outputs)
     private readonly ReaderWriterLockSlim _lock;
     private volatile bool _doLock;
     
@@ -21,6 +23,7 @@ public class TermCollection
     public TermCollection()
     {
         _termDictionary = new Dictionary<string, Term>();
+        _termList = new List<Term>();
         _lock = new ReaderWriterLockSlim();
         _doLock = false;
     }
@@ -35,6 +38,7 @@ public class TermCollection
             term.Clear();
         }
         _termDictionary.Clear();
+        _termList.Clear();
     }
     
     /// <summary>
@@ -67,6 +71,7 @@ public class TermCollection
             {
                 term = new Term(termText);
                 _termDictionary.Add(termText, term);
+                _termList.Add(term); // Also add to list for index-based access
                 isNewTerm = true;
                 
                 // Initial usage count
@@ -101,6 +106,31 @@ public class TermCollection
                 _lock.EnterReadLock();
             
             return _termDictionary.GetValueOrDefault(termText);
+        }
+        finally
+        {
+            if (shouldLock)
+                _lock.ExitReadLock();
+        }
+    }
+    
+    /// <summary>
+    /// Gets a term by its index (for FST integration).
+    /// Returns null if index is out of range.
+    /// </summary>
+    public Term? GetTermByIndex(int index)
+    {
+        bool shouldLock = _doLock;
+        
+        try
+        {
+            if (shouldLock)
+                _lock.EnterReadLock();
+            
+            if (index < 0 || index >= _termList.Count)
+                return null;
+            
+            return _termList[index];
         }
         finally
         {

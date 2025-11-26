@@ -83,12 +83,12 @@ public static class LevenshteinDistance
         for (int k = 0; k < bandwidth; k++)
         {
             int diagonalOffset = k - maxErrors;
-            if (diagonalOffset < 0)
-                costs[k] = -diagonalOffset; // Deletion cost from empty prefix
-            else if (diagonalOffset == 0)
-                costs[k] = 0;
-            else
-                costs[k] = maxErrors + 1; // Out of band
+            costs[k] = diagonalOffset switch
+            {
+                < 0 => -diagonalOffset,
+                0 => 0,
+                _ => maxErrors + 1
+            };
         }
         
         int minPLD = m; // Track minimum in last row
@@ -172,37 +172,6 @@ public static class LevenshteinDistance
         // The PLD is the minimum value in the last row (m-th row)
         // We've been tracking this in minPLD
         return minPLD;
-    }
-    
-    /// <summary>
-    /// Overload for string inputs.
-    /// </summary>
-    public static int CalculatePrefixDistance(string prefix, string word, int maxErrors = int.MaxValue)
-    {
-        return CalculatePrefixDistance(prefix.AsSpan(), word.AsSpan(), maxErrors);
-    }
-    
-    /// <summary>
-    /// Checks if a word is a "fuzzy completion" of a prefix within the dynamic threshold.
-    /// A word w is a fuzzy completion of prefix p if PLD(p, w) ≤ δ(|p|).
-    /// </summary>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static bool IsFuzzyCompletion(ReadOnlySpan<char> prefix, ReadOnlySpan<char> word)
-    {
-        int threshold = GetDynamicThreshold(prefix.Length);
-        return CalculatePrefixDistance(prefix, word, threshold) <= threshold;
-    }
-    
-    /// <summary>
-    /// Checks if two words are similar within the dynamic threshold.
-    /// Uses WLD (full word Levenshtein distance).
-    /// </summary>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static bool IsSimilarWord(ReadOnlySpan<char> word1, ReadOnlySpan<char> word2)
-    {
-        int maxLen = Math.Max(word1.Length, word2.Length);
-        int threshold = GetDynamicThreshold(maxLen);
-        return Calculate(word1, word2, threshold) <= threshold;
     }
 
     /// <summary>
@@ -353,8 +322,8 @@ public static class LevenshteinDistance
                         int remainingBudget = maxDistance - 1;
                         if (remainingBudget < 0) return maxDistance + 1;
                         
-                        ReadOnlySpan<char> sRest = (i + 2 < len) ? source.Slice(i + 2) : ReadOnlySpan<char>.Empty;
-                        ReadOnlySpan<char> tRest = (i + 2 < target.Length) ? target.Slice(i + 2) : ReadOnlySpan<char>.Empty;
+                        ReadOnlySpan<char> sRest = (i + 2 < len) ? source[(i + 2)..] : ReadOnlySpan<char>.Empty;
+                        ReadOnlySpan<char> tRest = (i + 2 < target.Length) ? target[(i + 2)..] : ReadOnlySpan<char>.Empty;
                         
                         int restDist = Calculate(sRest, tRest, remainingBudget, ignoreCase);
                         

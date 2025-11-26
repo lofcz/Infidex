@@ -68,124 +68,6 @@ public static class AutocompleteScoring
     }
     
     /// <summary>
-    /// Computes autocomplete score optimized for type-ahead search.
-    /// Higher scores indicate better matches for autocomplete purposes.
-    /// 
-    /// Scoring factors:
-    /// 1. Prefix match (most important for autocomplete)
-    /// 2. Word boundary matches
-    /// 3. LCS coverage
-    /// 4. Candidate length penalty (shorter matches preferred when equal)
-    /// </summary>
-    /// <param name="query">The search query</param>
-    /// <param name="candidate">The candidate string to match</param>
-    /// <returns>Score in [0, 255] for byte-compatible scoring</returns>
-    public static byte ComputeAutocompleteScore(ReadOnlySpan<char> query, ReadOnlySpan<char> candidate)
-    {
-        if (query.IsEmpty || candidate.IsEmpty)
-            return 0;
-        
-        int queryLen = query.Length;
-        int candidateLen = candidate.Length;
-        
-        // Compute components
-        int prefix = CommonPrefixLength(query, candidate);
-        int lcs = ComputeLcsLength(query, candidate);
-        
-        if (lcs == 0)
-            return 0;
-        
-        // Calculate word boundary matches
-        int wordBoundaryMatches = CountWordBoundaryMatches(query, candidate);
-        
-        float score = 0f;
-        
-        // Factor 1: Prefix coverage (0-100 points)
-        // Full prefix match = 100, partial = proportional
-        float prefixCoverage = (float)prefix / queryLen;
-        score += prefixCoverage * 100f;
-        
-        // Factor 2: LCS coverage (0-80 points)
-        // How much of the query is found as subsequence
-        float lcsCoverage = (float)lcs / queryLen;
-        score += lcsCoverage * 80f;
-        
-        // Factor 3: Word boundary bonus (0-50 points)
-        // Matches at word starts are more valuable
-        score += Math.Min(wordBoundaryMatches * 10f, 50f);
-        
-        // Factor 4: Conciseness bonus (0-25 points)
-        // Prefer shorter candidates that still match well
-        float lengthRatio = (float)queryLen / candidateLen;
-        score += lengthRatio * 25f;
-        
-        // Normalize to 0-255
-        return (byte)Math.Clamp(score, 0f, 255f);
-    }
-    
-    /// <summary>
-    /// Computes multi-token autocomplete score.
-    /// Handles queries with multiple words, allowing free word order.
-    /// </summary>
-    public static byte ComputeMultiTokenScore(string query, string candidate, char[] delimiters)
-    {
-        string[] queryTokens = query.Split(delimiters, StringSplitOptions.RemoveEmptyEntries);
-        string[] candidateTokens = candidate.Split(delimiters, StringSplitOptions.RemoveEmptyEntries);
-        
-        if (queryTokens.Length == 0 || candidateTokens.Length == 0)
-            return 0;
-        
-        float totalScore = 0f;
-        int matchedTokens = 0;
-        bool[] usedCandidateTokens = new bool[candidateTokens.Length];
-        
-        // For each query token, find best matching candidate token
-        foreach (string qToken in queryTokens)
-        {
-            float bestMatch = 0f;
-            int bestIndex = -1;
-            
-            for (int i = 0; i < candidateTokens.Length; i++)
-            {
-                if (usedCandidateTokens[i])
-                    continue;
-                
-                float tokenScore = ComputeJaroLikeScore(qToken.AsSpan(), candidateTokens[i].AsSpan());
-                
-                if (tokenScore > bestMatch)
-                {
-                    bestMatch = tokenScore;
-                    bestIndex = i;
-                }
-            }
-            
-            if (bestIndex >= 0 && bestMatch > 0.3f) // Minimum match threshold
-            {
-                usedCandidateTokens[bestIndex] = true;
-                totalScore += bestMatch;
-                matchedTokens++;
-            }
-        }
-        
-        if (matchedTokens == 0)
-            return 0;
-        
-        // Average token score
-        float avgScore = totalScore / queryTokens.Length;
-        
-        // Token coverage bonus: prefer candidates that match more query tokens
-        float coverage = (float)matchedTokens / queryTokens.Length;
-        
-        // Order bonus: tokens in correct order get bonus
-        float orderBonus = CalculateOrderBonus(queryTokens, candidateTokens, usedCandidateTokens);
-        
-        // Combined score
-        float finalScore = (avgScore * 0.6f + coverage * 0.3f + orderBonus * 0.1f) * 255f;
-        
-        return (byte)Math.Clamp(finalScore, 0f, 255f);
-    }
-    
-    /// <summary>
     /// Computes LCS length using bit-parallel algorithm for short strings
     /// and standard DP for longer strings.
     /// </summary>
@@ -290,9 +172,7 @@ public static class AutocompleteScoring
                 }
                 
                 // Swap rows
-                int[] temp = prev;
-                prev = curr;
-                curr = temp;
+                (prev, curr) = (curr, prev);
             }
             
             return prev[m];
@@ -302,38 +182,6 @@ public static class AutocompleteScoring
             ArrayPool<int>.Shared.Return(prev);
             ArrayPool<int>.Shared.Return(curr);
         }
-    }
-    
-    /// <summary>
-    /// Counts characters that match at word boundaries in the candidate.
-    /// Word boundaries are: start of string, after space/punctuation.
-    /// </summary>
-    private static int CountWordBoundaryMatches(ReadOnlySpan<char> query, ReadOnlySpan<char> candidate)
-    {
-        int matches = 0;
-        int queryIndex = 0;
-        bool atWordStart = true;
-        
-        for (int i = 0; i < candidate.Length && queryIndex < query.Length; i++)
-        {
-            char c = candidate[i];
-            
-            if (char.IsWhiteSpace(c) || char.IsPunctuation(c))
-            {
-                atWordStart = true;
-                continue;
-            }
-            
-            if (atWordStart && char.ToLowerInvariant(c) == char.ToLowerInvariant(query[queryIndex]))
-            {
-                matches++;
-                queryIndex++;
-            }
-            
-            atWordStart = false;
-        }
-        
-        return matches;
     }
     
     /// <summary>
@@ -352,52 +200,7 @@ public static class AutocompleteScoring
         
         return i;
     }
-    
-    /// <summary>
-    /// Calculates bonus for tokens appearing in correct order.
-    /// </summary>
-    private static float CalculateOrderBonus(string[] queryTokens, string[] candidateTokens, bool[] usedCandidateTokens)
-    {
-        if (queryTokens.Length < 2)
-            return 1f;
-        
-        int orderedPairs = 0;
-        int totalPairs = 0;
-        int lastUsedIndex = -1;
-        
-        foreach (string qToken in queryTokens)
-        {
-            // Find which candidate index this token matched
-            int matchedIndex = -1;
-            float bestMatch = 0f;
-            
-            for (int i = 0; i < candidateTokens.Length; i++)
-            {
-                if (!usedCandidateTokens[i])
-                    continue;
-                
-                float score = ComputeJaroLikeScore(qToken.AsSpan(), candidateTokens[i].AsSpan());
-                if (score > bestMatch)
-                {
-                    bestMatch = score;
-                    matchedIndex = i;
-                }
-            }
-            
-            if (matchedIndex >= 0 && lastUsedIndex >= 0)
-            {
-                totalPairs++;
-                if (matchedIndex > lastUsedIndex)
-                    orderedPairs++;
-            }
-            
-            if (matchedIndex >= 0)
-                lastUsedIndex = matchedIndex;
-        }
-        
-        return totalPairs > 0 ? (float)orderedPairs / totalPairs : 1f;
-    }
-    
+
     /// <summary>
     /// Bit manipulation helper.
     /// </summary>
@@ -406,17 +209,10 @@ public static class AutocompleteScoring
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public static int PopCount(ulong value)
         {
-#if NET6_0_OR_GREATER
             return System.Numerics.BitOperations.PopCount(value);
-#else
-            // Hamming weight algorithm
-            value -= (value >> 1) & 0x5555555555555555UL;
-            value = (value & 0x3333333333333333UL) + ((value >> 2) & 0x3333333333333333UL);
-            value = (value + (value >> 4)) & 0x0F0F0F0F0F0F0F0FUL;
-            return (int)((value * 0x0101010101010101UL) >> 56);
-#endif
         }
     }
 }
+
 
 
