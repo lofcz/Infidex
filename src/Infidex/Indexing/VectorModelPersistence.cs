@@ -27,7 +27,8 @@ internal static class VectorModelPersistence
         }
 
         IEnumerable<Term> terms = termCollection.GetAllTerms();
-        writer.Write(terms.Count());
+        writer.Write(termCollection.Count);
+        
         foreach (Term term in terms)
         {
             writer.Write(term.Text ?? string.Empty);

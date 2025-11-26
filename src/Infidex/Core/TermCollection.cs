@@ -100,10 +100,7 @@ public class TermCollection
             if (shouldLock)
                 _lock.EnterReadLock();
             
-            if (_termDictionary.TryGetValue(termText, out Term? term))
-                return term;
-            
-            return null;
+            return _termDictionary.GetValueOrDefault(termText);
         }
         finally
         {
