@@ -3,7 +3,7 @@ namespace Infidex.Metrics;
 /// <summary>
 /// Additional string similarity metrics (Jaro-Winkler, LCS, etc.)
 /// </summary>
-public static class StringMetrics
+internal static class StringMetrics
 {
     /// <summary>
     /// Calculates LCS with error tolerance.
@@ -32,9 +32,7 @@ public static class StringMetrics
             prefixLen++;
         }
         
-        if (prefixLen == 0) return 0;
-        
-        return Math.Min(prefixLen + errorTolerance, Math.Min(q.Length, r.Length));
+        return prefixLen == 0 ? 0 : Math.Min(prefixLen + errorTolerance, Math.Min(q.Length, r.Length));
     }
 
     /// <summary>

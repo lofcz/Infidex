@@ -62,17 +62,34 @@ internal sealed class SearchPipeline
         {
             ScoreArray relevancyScores = ExecuteRelevancyStage(searchText, bestSegments, coverageDepth, maxResults, ref tfidfMs, perfStopwatch);
 
+            // Always compute consolidated TF-IDF candidates so we can fall back if coverage
+            // decides there are no good lexical matches (e.g. typo-heavy queries like "battamam").
+            ScoreArray consolidatedStage1 = SegmentProcessor.ConsolidateSegments(relevancyScores, bestSegments);
+            ScoreEntry[] stage1Results = consolidatedStage1.GetAll();
+
             if (_coverageEngine == null || coverageSetup == null || !QueryAnalyzer.CanUseNGrams(searchText, _vectorModel.Tokenizer))
             {
-                ScoreArray consolidated = SegmentProcessor.ConsolidateSegments(relevancyScores, bestSegments);
-                return consolidated.GetAll();
+                return stage1Results;
             }
 
-            return ExecuteCoverageStage(
+            ScoreEntry[] coverageResults = ExecuteCoverageStage(
                 searchText, coverageSetup, coverageDepth, maxResults,
                 relevancyScores, bestSegments,
                 ref topKMs, ref wordMatcherCoverageMs, ref tfidfCoverageMs, ref truncationMs,
                 perfStopwatch, tfidfMs);
+
+            // Safety net: if coverage returns no results but TF-IDF produced candidates,
+            // fall back to the TF-IDF backbone instead of returning an empty result set.
+            if (coverageResults.Length == 0 && stage1Results.Length > 0)
+            {
+                if (EnableDebugLogging)
+                {
+                    Console.WriteLine("[DEBUG] Coverage produced 0 results; falling back to TF-IDF backbone results.");
+                }
+                return stage1Results;
+            }
+
+            return coverageResults;
         }
         finally
         {
@@ -120,7 +137,7 @@ internal sealed class SearchPipeline
 
                 relevancyScores = ShortQueryProcessor.SearchShortQuery(
                     searchText, searchText.ToLowerInvariant(), minIndexSize,
-                    _vectorModel.Tokenizer.StartPadSize, _vectorModel.TermPrefixTrie,
+                    _vectorModel.Tokenizer.StartPadSize, _vectorModel.FstIndex,
                     _vectorModel.TermCollection, _vectorModel.Documents,
                     bestSegments, delimiters, EnableDebugLogging);
             }

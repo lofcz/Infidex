@@ -264,29 +264,5 @@ public class Tokenizer
         
         return result;
     }
-
-    /// <summary>
-    /// Gets word tokens with their positions for coverage calculations.
-    /// Returns a list of (Word, Position) tuples.
-    /// </summary>
-    public List<(string Word, int Position)> GetWordTokensWithPositions(string text, int minWordSize)
-    {
-        if (TokenizerSetup == null)
-            return [];
-        
-        string[] words = text.Split(TokenizerSetup.Delimiters, StringSplitOptions.RemoveEmptyEntries);
-        List<(string Word, int Position)> result = [];
-        
-        for (int i = 0; i < words.Length; i++)
-        {
-            string word = words[i];
-            if (word.Length >= minWordSize)
-            {
-                result.Add((word.ToLowerInvariant(), i));
-            }
-        }
-        
-        return result;
-    }
 }
 

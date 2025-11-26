@@ -1,22 +1,29 @@
 using Infidex.Core;
 using Infidex.Filtering;
-using Infidex.Metrics;
 using Infidex.Tokenization;
+using Infidex.Indexing.Fst;
 
 namespace Infidex.WordMatcher;
 
 /// <summary>
 /// High-performance word-based index for fast exact and fuzzy word matching.
+/// Uses FST for efficient prefix/suffix queries and symmetric delete for LD1.
 /// Supports exact matching, LD1 (Levenshtein Distance 1), and affix matching.
 /// </summary>
-public sealed class WordMatcher : IDisposable
+internal sealed class WordMatcher : IDisposable
 {
     private readonly Dictionary<string, HashSet<int>> _exactIndex;
     private readonly Dictionary<string, HashSet<int>> _ld1Index; // Levenshtein Distance 1
-    private readonly AffixIndex? _affixIndex;
     private readonly char[] _delimiters;
     private readonly WordMatcherSetup _setup;
     private readonly TextNormalizer? _textNormalizer;
+    
+    // FST for prefix/suffix queries (replaces AffixIndex)
+    private FstBuilder? _fstBuilder;
+    private FstIndex? _fstIndex;
+    private readonly Dictionary<int, HashSet<int>> _fstTermToDocIds; // Maps FST output to doc IDs
+    private int _nextFstTermId;
+    
     private bool _disposed;
     
     public WordMatcher(WordMatcherSetup setup, char[] delimiters, TextNormalizer? textNormalizer = null)
@@ -29,13 +36,13 @@ public sealed class WordMatcher : IDisposable
         
         if (setup.SupportAffix)
         {
-            // In the original implementation, the affix index uses the LD1
-            // min/max word sizes (not the exact-match sizes). This controls
-            // which word lengths participate in prefix/suffix matching.
-            _affixIndex = new AffixIndex(
-                setup.MinimumWordSizeLD1,
-                setup.MaximumWordSizeLD1,
-                delimiters);
+            _fstBuilder = new FstBuilder();
+            _fstTermToDocIds = new Dictionary<int, HashSet<int>>();
+            _nextFstTermId = 0;
+        }
+        else
+        {
+            _fstTermToDocIds = new Dictionary<int, HashSet<int>>();
         }
     }
     
@@ -46,7 +53,10 @@ public sealed class WordMatcher : IDisposable
     {
         _exactIndex.Clear();
         _ld1Index.Clear();
-        _affixIndex?.Clear();
+        _fstBuilder?.Clear();
+        _fstIndex = null;
+        _fstTermToDocIds.Clear();
+        _nextFstTermId = 0;
     }
     
     /// <summary>
@@ -80,13 +90,51 @@ public sealed class WordMatcher : IDisposable
             {
                 GenerateLD1Variants(word, docIndex);
             }
+            
+            // FST for prefix/suffix (replaces AffixIndex)
+            if (_setup.SupportAffix && _fstBuilder != null && length >= _setup.MinimumWordSizeLD1)
+            {
+                IndexWordInFst(word, docIndex);
+            }
+        }
+    }
+    
+    /// <summary>
+    /// Finalizes the index after all documents have been loaded.
+    /// Must be called before querying affix matches.
+    /// </summary>
+    public void FinalizeIndex()
+    {
+        if (_fstBuilder != null)
+        {
+            _fstIndex = _fstBuilder.Build();
+        }
+    }
+    
+    private void IndexWordInFst(string word, int docIndex)
+    {
+        // Get or create term ID for this word
+        int termId;
+        int existingOutput = _fstIndex?.GetExact(word.AsSpan()) ?? -1;
+        
+        if (existingOutput < 0)
+        {
+            // New word - add to FST builder
+            termId = _nextFstTermId++;
+            _fstBuilder!.Add(word, termId);
+        }
+        else
+        {
+            termId = existingOutput;
         }
         
-        // Affix index
-        if (_affixIndex != null)
+        // Map term to document
+        if (!_fstTermToDocIds.TryGetValue(termId, out HashSet<int>? docs))
         {
-            _affixIndex.LoadSentence(normalizedText, docIndex);
+            docs = [];
+            _fstTermToDocIds[termId] = docs;
         }
+        docs.Add(docIndex);
     }
     
     /// <summary>
@@ -149,17 +197,48 @@ public sealed class WordMatcher : IDisposable
     }
     
     /// <summary>
-    /// Looks up documents using affix (prefix/suffix) matching
+    /// Looks up documents using affix (prefix/suffix) matching via FST.
     /// </summary>
     public HashSet<int> LookupAffix(string query, FilterMask? filter = null)
     {
         HashSet<int> results = [];
+        
+        if (_fstIndex == null)
+        {
+            // FST not built yet - finalize first
+            FinalizeIndex();
+            if (_fstIndex == null)
+                return results;
+        }
+        
         string normalized = query.ToLowerInvariant();
         if (_textNormalizer != null)
         {
             normalized = _textNormalizer.Normalize(normalized);
         }
-        _affixIndex?.Lookup(normalized, filter, results);
+        
+        // Get matching term IDs from FST
+        List<int> termIds = [];
+        
+        // Prefix matches
+        _fstIndex.GetByPrefix(normalized.AsSpan(), termIds);
+        
+        // Suffix matches
+        _fstIndex.GetBySuffix(normalized.AsSpan(), termIds);
+        
+        // Convert term IDs to document IDs
+        foreach (int termId in termIds)
+        {
+            if (_fstTermToDocIds.TryGetValue(termId, out HashSet<int>? docs))
+            {
+                foreach (int docId in docs)
+                {
+                    if (filter == null || filter.IsInFilter(docId))
+                        results.Add(docId);
+                }
+            }
+        }
+        
         return results;
     }
     
@@ -193,9 +272,17 @@ public sealed class WordMatcher : IDisposable
 
     public void Save(BinaryWriter writer)
     {
+        // Ensure FST is built if affix support is enabled so that we can
+        // persist affix data for parity after reload. This is cheap if the
+        // index has already been finalized.
+        if (_setup.SupportAffix && _fstIndex == null && _fstBuilder != null && _fstTermToDocIds.Count > 0)
+        {
+            FinalizeIndex();
+        }
+
         // Save Exact Index
         writer.Write(_exactIndex.Count);
-        foreach (var kvp in _exactIndex)
+        foreach (KeyValuePair<string, HashSet<int>> kvp in _exactIndex)
         {
             writer.Write(kvp.Key);
             writer.Write(kvp.Value.Count);
@@ -207,7 +294,7 @@ public sealed class WordMatcher : IDisposable
 
         // Save LD1 Index
         writer.Write(_ld1Index.Count);
-        foreach (var kvp in _ld1Index)
+        foreach (KeyValuePair<string, HashSet<int>> kvp in _ld1Index)
         {
             writer.Write(kvp.Key);
             writer.Write(kvp.Value.Count);
@@ -217,16 +304,31 @@ public sealed class WordMatcher : IDisposable
             }
         }
 
-        // Save Affix Index presence
-        writer.Write(_affixIndex != null);
-        if (_affixIndex != null)
+        // Save FST index (replaces AffixIndex)
+        bool hasFst = _fstIndex != null;
+        writer.Write(hasFst);
+        if (hasFst && _fstIndex != null)
         {
-            _affixIndex.Save(writer);
+            FstSerializer.Write(writer, _fstIndex);
+            
+            // Save term-to-docIds mapping
+            writer.Write(_fstTermToDocIds.Count);
+            foreach (KeyValuePair<int, HashSet<int>> kvp in _fstTermToDocIds)
+            {
+                writer.Write(kvp.Key);
+                writer.Write(kvp.Value.Count);
+                foreach (int docId in kvp.Value)
+                {
+                    writer.Write(docId);
+                }
+            }
         }
     }
 
     public void Load(BinaryReader reader)
     {
+        Clear();
+        
         // Load Exact Index
         int exactCount = reader.ReadInt32();
         for (int i = 0; i < exactCount; i++)
@@ -255,28 +357,25 @@ public sealed class WordMatcher : IDisposable
             _ld1Index[key] = docs;
         }
 
-        // Load Affix Index
-        bool hasAffixIndex = reader.ReadBoolean();
-        if (hasAffixIndex && _affixIndex != null)
+        // Load FST index
+        bool hasFst = reader.ReadBoolean();
+        if (hasFst)
         {
-            _affixIndex.Load(reader);
-        }
-        else if (hasAffixIndex && _affixIndex == null)
-        {
-            // Index has affix data but we don't have an affix index set up.
-            // We need to skip the data.
-            // AffixIndex.Save writes Count (int) then for each: String, Count (int), ints...
-            // This is hard to skip without implementing a Skip logic or creating a dummy AffixIndex.
-            // For now, assume setup consistency or read and discard.
-            int count = reader.ReadInt32();
-            for (int i = 0; i < count; i++)
+            _fstIndex = FstSerializer.Read(reader);
+            
+            // Load term-to-docIds mapping
+            int termCount = reader.ReadInt32();
+            for (int i = 0; i < termCount; i++)
             {
-                reader.ReadString(); // key
+                int termId = reader.ReadInt32();
                 int docCount = reader.ReadInt32();
+                HashSet<int> docs = new HashSet<int>(docCount);
                 for (int j = 0; j < docCount; j++)
                 {
-                    reader.ReadInt32(); // docId
+                    docs.Add(reader.ReadInt32());
                 }
+                _fstTermToDocIds[termId] = docs;
+                _nextFstTermId = Math.Max(_nextFstTermId, termId + 1);
             }
         }
     }
@@ -294,7 +393,6 @@ public sealed class WordMatcher : IDisposable
         if (disposing)
         {
             Clear();
-            _affixIndex?.Dispose();
         }
         
         _disposed = true;

@@ -1,11 +1,15 @@
 using Infidex.Core;
 using Infidex.Tokenization;
 using Infidex.Internalized.CommunityToolkit;
+using Infidex.Indexing.Fst;
+using Infidex.Indexing.ShortQuery;
 
 namespace Infidex.Indexing;
 
 /// <summary>
 /// TF-IDF vector space model for relevancy ranking (Stage 1).
+/// Uses FST-based term index and O(1) short query resolution.
+/// Thread-safe for concurrent searching.
 /// </summary>
 public class VectorModel
 {
@@ -17,17 +21,21 @@ public class VectorModel
 
     private float[]? _docLengths;
     private float _avgDocLength;
-    private TermPrefixTrie? _termPrefixTrie;
-    private ScoreDecomposedTrie? _scoreDecomposedTrie;
-    private DepthFirstFuzzySearch? _fuzzySearchIndex;
-    private readonly List<Term> _pendingTrieTerms = [];
+    
+    // FST-based indexes
+    private FstIndex? _fstIndex;
+    private FstBuilder? _fstBuilder;
+    private PositionalPrefixIndex? _shortQueryIndex;
+    private ShortQueryResolver? _shortQueryResolver;
 
     public Tokenizer Tokenizer => _tokenizer;
     public DocumentCollection Documents => _documents;
     public TermCollection TermCollection => _termCollection;
-    internal TermPrefixTrie? TermPrefixTrie => _termPrefixTrie;
-    internal ScoreDecomposedTrie? ScoreDecomposedTrie => _scoreDecomposedTrie;
-    internal DepthFirstFuzzySearch? FuzzySearchIndex => _fuzzySearchIndex;
+    
+    // Index accessors
+    internal FstIndex? FstIndex => _fstIndex;
+    internal PositionalPrefixIndex? ShortQueryIndex => _shortQueryIndex;
+    internal ShortQueryResolver? ShortQueryResolver => _shortQueryResolver;
 
     public event EventHandler<int>? ProgressChanged;
     public bool EnableDebugLogging { get; set; }
@@ -39,10 +47,15 @@ public class VectorModel
         _termCollection = new TermCollection();
         _documents = new DocumentCollection();
         _fieldWeights = fieldWeights ?? ConfigurationParameters.DefaultFieldWeights;
+        
+        // Initialize FST builder
+        _fstBuilder = new FstBuilder();
+        
+        // Initialize short query index
+        char[] delimiters = tokenizer.TokenizerSetup?.Delimiters ?? [' '];
+        _shortQueryIndex = new PositionalPrefixIndex(delimiters: delimiters);
     }
-
-    #region Indexing
-
+    
     public Document IndexDocument(Document document)
     {
         Document doc = _documents.AddDocument(document);
@@ -59,10 +72,18 @@ public class VectorModel
         {
             float fieldWeight = DetermineFieldWeight(shingle.Position, fieldBoundaries);
             Term term = _termCollection.CountTermUsage(shingle.Text, _stopTermLimit, forFastInsert: false, out bool isNewTerm);
+            
             if (isNewTerm)
-                _pendingTrieTerms.Add(term);
+            {
+                // Add to FST builder
+                _fstBuilder?.AddForwardOnly(shingle.Text, _termCollection.Count - 1);
+            }
+            
             term.FirstCycleAdd(doc.Id, _stopTermLimit, removeDuplicates: isSegmentContinuation, fieldWeight);
         }
+        
+        // Index for short query resolution
+        _shortQueryIndex?.IndexDocument(text, doc.Id);
 
         return doc;
     }
@@ -145,33 +166,47 @@ public class VectorModel
         for (int i = 0; i < terms.Count; i++)
             terms[i].AddForFastInsert(weights[i], documentIndex);
     }
-
-    #endregion
-
-    #region Trie Building
-
-    internal void BuildTermPrefixTrie()
+    
+    /// <summary>
+    /// Builds all optimized indexes (FST, short query).
+    /// Call after all documents have been indexed.
+    /// </summary>
+    public void BuildOptimizedIndexes()
     {
-        if (_termPrefixTrie == null)
+        // Build FST
+        if (_fstBuilder != null)
         {
-            TermPrefixTrie trie = new TermPrefixTrie();
-            foreach (Term term in _termCollection.GetAllTerms())
-                trie.Add(term);
-            _pendingTrieTerms.Clear();
-            _termPrefixTrie = trie;
+            _fstIndex = _fstBuilder.Build();
         }
-        else if (_pendingTrieTerms.Count > 0)
+        
+        // Finalize short query index
+        _shortQueryIndex?.Finalize();
+        
+        // Create short query resolver
+        if (_shortQueryIndex != null)
         {
-            foreach (Term term in _pendingTrieTerms)
-                _termPrefixTrie.Add(term);
-            _pendingTrieTerms.Clear();
+            char[] delimiters = _tokenizer.TokenizerSetup?.Delimiters ?? [' '];
+            _shortQueryResolver = new ShortQueryResolver(_shortQueryIndex, _documents, delimiters);
         }
     }
-
-    #endregion
-
-    #region Search
-
+    
+    /// <summary>
+    /// Gets terms by prefix using the FST index.
+    /// Returns term IDs (outputs) that can be used to look up Term objects.
+    /// </summary>
+    public void GetTermsByPrefix(string prefix, List<int> termIds)
+    {
+        _fstIndex?.GetByPrefix(prefix.AsSpan(), termIds);
+    }
+    
+    /// <summary>
+    /// Checks if any term starts with the given prefix.
+    /// </summary>
+    public bool HasTermPrefix(string prefix)
+    {
+        return _fstIndex?.HasPrefix(prefix.AsSpan()) ?? false;
+    }
+    
     internal ScoreArray Search(string queryText, Span2D<byte> bestSegments = default, int queryIndex = 0)
         => SearchWithMaxScore(queryText, int.MaxValue, bestSegments, queryIndex);
 
@@ -200,10 +235,6 @@ public class VectorModel
         return Bm25Scorer.Search(queryTerms, topK, totalDocs, _docLengths!, _avgDocLength, _stopTermLimit, _documents, bestSegments, queryIndex);
     }
 
-    #endregion
-
-    #region Persistence
-
     public void Save(string filePath)
     {
         using FileStream stream = File.Create(filePath);
@@ -214,7 +245,7 @@ public class VectorModel
     public async Task SaveAsync(string filePath) => await Task.Run(() => Save(filePath));
 
     internal void SaveToStream(BinaryWriter writer)
-        => VectorModelPersistence.SaveToStream(writer, _documents, _termCollection);
+        => VectorModelPersistence.SaveToStream(writer, _documents, _termCollection, _fstIndex, _shortQueryIndex);
 
     public static VectorModel Load(string filePath, Tokenizer tokenizer, int stopTermLimit = 1_250_000, float[]? fieldWeights = null)
     {
@@ -229,7 +260,15 @@ public class VectorModel
         => await Task.Run(() => Load(filePath, tokenizer, stopTermLimit, fieldWeights));
 
     internal void LoadFromStream(BinaryReader reader)
-        => VectorModelPersistence.LoadFromStream(reader, _documents, _termCollection, _stopTermLimit);
-
-    #endregion
+    {
+        VectorModelPersistence.LoadFromStream(reader, _documents, _termCollection, _stopTermLimit, 
+            out _fstIndex, out _shortQueryIndex);
+        
+        // Create resolver if short query index was loaded
+        if (_shortQueryIndex != null)
+        {
+            char[] delimiters = _tokenizer.TokenizerSetup?.Delimiters ?? [' '];
+            _shortQueryResolver = new ShortQueryResolver(_shortQueryIndex, _documents, delimiters);
+        }
+    }
 }

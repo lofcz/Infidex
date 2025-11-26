@@ -1,5 +1,7 @@
 using Infidex.Core;
 using Infidex.Indexing;
+using Infidex.Indexing.Fst;
+using Infidex.Indexing.ShortQuery;
 using Infidex.Internalized.CommunityToolkit;
 using Infidex.Tokenization;
 
@@ -7,6 +9,7 @@ namespace Infidex.Scoring;
 
 /// <summary>
 /// Handles short query searches (single-character and queries below n-gram threshold).
+/// Uses FST-based prefix lookup for O(prefix length) term resolution.
 /// </summary>
 internal static class ShortQueryProcessor
 {
@@ -150,13 +153,14 @@ internal static class ShortQueryProcessor
 
     /// <summary>
     /// Searches short queries (below n-gram threshold) using prefix matching with inverted index.
+    /// Uses FST for O(prefix length) term lookup when available.
     /// </summary>
     public static ScoreArray SearchShortQuery(
         string searchText,
         string searchLower,
         int minIndexSize,
         int startPadSize,
-        TermPrefixTrie? trie,
+        FstIndex? fstIndex,
         TermCollection termCollection,
         DocumentCollection documents,
         Span2D<byte> bestSegments,
@@ -175,12 +179,25 @@ internal static class ShortQueryProcessor
             Console.WriteLine($"[DEBUG] Generated {prefixPatterns.Count} prefix patterns: {string.Join(", ", prefixPatterns.Select(p => $"'{p}'"))}");
         }
 
-        // Phase 1: Exact prefix matching
+        // Phase 1: Exact prefix matching using FST or fallback to linear scan
         foreach (string pattern in prefixPatterns)
         {
-            IEnumerable<Term> matchingTerms = trie != null
-                ? trie.FindByPrefix(pattern)
-                : termCollection.GetAllTerms().Where(t => t.Text?.StartsWith(pattern) == true);
+            IEnumerable<Term> matchingTerms;
+            
+            if (fstIndex != null)
+            {
+                // O(prefix length) FST lookup - returns term indices
+                List<int> termIndices = [];
+                fstIndex.GetByPrefix(pattern.AsSpan(), termIndices);
+                matchingTerms = termIndices
+                    .Select(termCollection.GetTermByIndex)
+                    .Where(t => t != null)!;
+            }
+            else
+            {
+                // Fallback to linear scan
+                matchingTerms = termCollection.GetAllTerms().Where(t => t.Text?.StartsWith(pattern) == true);
+            }
 
             foreach (Term term in matchingTerms)
             {
@@ -369,7 +386,6 @@ internal static class ShortQueryProcessor
 
         if (queryTokens.Length >= 2)
         {
-            // Multi-token short query: prefer documents with more token coverage
             int tokenMatches = queryTokens.Count(qt => words.Any(w => string.Equals(w, qt, StringComparison.Ordinal)));
             bool allTokensPresent = queryTokens.Length > 0 && tokenMatches == queryTokens.Length;
 
@@ -386,7 +402,6 @@ internal static class ShortQueryProcessor
         }
         else
         {
-            // Single-token short query
             bool anyTokenExact = false;
             bool firstTokenExact = false;
 
@@ -407,4 +422,3 @@ internal static class ShortQueryProcessor
         return precedence;
     }
 }
-

@@ -1,96 +1,109 @@
 using Infidex.Api;
 using Infidex.Core;
+using Infidex.Indexing.Fst;
+using Infidex.Indexing.ShortQuery;
 
 namespace Infidex.Indexing;
 
 /// <summary>
 /// Serialization logic for VectorModel index persistence.
+/// Uses the current binary format with checksum validation.
+/// Older formats are not supported.
 /// </summary>
 internal static class VectorModelPersistence
 {
-    private const string FormatVersion = "INFIDEX_V1";
-
+    /// <summary>
+    /// Saves the index to a stream.
+    /// </summary>
     public static void SaveToStream(BinaryWriter writer, DocumentCollection documents, TermCollection termCollection)
     {
-        writer.Write(FormatVersion);
-
-        IReadOnlyList<Document> allDocs = documents.GetAllDocuments();
-        writer.Write(allDocs.Count);
-        foreach (Document doc in allDocs)
-        {
-            writer.Write(doc.Id);
-            writer.Write(doc.DocumentKey);
-            writer.Write(doc.IndexedText ?? string.Empty);
-            writer.Write(doc.DocumentClientInformation ?? string.Empty);
-            writer.Write(doc.SegmentNumber);
-            writer.Write(doc.JsonIndex);
-        }
-
-        IEnumerable<Term> terms = termCollection.GetAllTerms();
-        writer.Write(termCollection.Count);
-        
-        foreach (Term term in terms)
-        {
-            writer.Write(term.Text ?? string.Empty);
-            writer.Write(term.DocumentFrequency);
-
-            List<int>? docIds = term.GetDocumentIds();
-            List<byte>? weights = term.GetWeights();
-
-            int count = docIds?.Count ?? 0;
-            writer.Write(count);
-
-            if (count > 0 && docIds != null && weights != null)
-            {
-                for (int i = 0; i < count; i++)
-                {
-                    writer.Write(docIds[i]);
-                    writer.Write(weights[i]);
-                }
-            }
-        }
+        SaveToStream(writer, documents, termCollection, null, null);
     }
-
+    
+    /// <summary>
+    /// Saves the index to a stream with optional FST and short query indexes.
+    /// </summary>
+    public static void SaveToStream(
+        BinaryWriter writer,
+        DocumentCollection documents,
+        TermCollection termCollection,
+        FstIndex? fstIndex,
+        PositionalPrefixIndex? shortQueryIndex)
+    {
+        IndexPersistence.Save(writer, documents, termCollection, fstIndex, shortQueryIndex);
+    }
+    
+    /// <summary>
+    /// Loads the index from a stream.
+    /// </summary>
     public static void LoadFromStream(BinaryReader reader, DocumentCollection documents, TermCollection termCollection, int stopTermLimit)
     {
-        string version = reader.ReadString();
-        if (version != FormatVersion)
-            throw new InvalidDataException($"Unknown index format: {version}");
-
-        int docCount = reader.ReadInt32();
-        for (int i = 0; i < docCount; i++)
+        LoadFromStream(reader, documents, termCollection, stopTermLimit, out _, out _);
+    }
+    
+    /// <summary>
+    /// Loads the index from a stream with FST and short query indexes.
+    /// </summary>
+    public static void LoadFromStream(
+        BinaryReader reader,
+        DocumentCollection documents,
+        TermCollection termCollection,
+        int stopTermLimit,
+        out FstIndex? fstIndex,
+        out PositionalPrefixIndex? shortQueryIndex)
+    {
+        IndexPersistence.Load(reader, documents, termCollection, stopTermLimit, out fstIndex, out shortQueryIndex);
+    }
+    
+    /// <summary>
+    /// Checks if a file contains a valid index.
+    /// </summary>
+    public static bool IsValidIndex(string filePath)
+    {
+        return IndexPersistence.IsValidIndex(filePath);
+    }
+    
+    /// <summary>
+    /// Gets format information from an index file.
+    /// </summary>
+    public static IndexFormatInfo GetFormatInfo(string filePath)
+    {
+        (bool isValid, uint version, IndexPersistence.IndexFlags flags, uint docCount, uint termCount) = IndexPersistence.GetIndexInfo(filePath);
+        
+        return new IndexFormatInfo
         {
-            int id = reader.ReadInt32();
-            long key = reader.ReadInt64();
-            string text = reader.ReadString();
-            string info = reader.ReadString();
-            int seg = reader.ReadInt32();
-            int jsonIdx = reader.ReadInt32();
-
-            DocumentFields fields = new DocumentFields();
-            fields.AddField("content", text, Weight.Med, indexable: true);
-
-            Document doc = new Document(key, seg, fields, info) { JsonIndex = jsonIdx, IndexedText = text };
-            documents.AddDocument(doc);
-        }
-
-        int termCount = reader.ReadInt32();
-        for (int i = 0; i < termCount; i++)
-        {
-            string text = reader.ReadString();
-            int docFreq = reader.ReadInt32();
-            int postingCount = reader.ReadInt32();
-
-            Term term = termCollection.CountTermUsage(text, stopTermLimit, true);
-            term.SetDocumentFrequency(docFreq);
-
-            for (int j = 0; j < postingCount; j++)
-            {
-                int docId = reader.ReadInt32();
-                byte weight = reader.ReadByte();
-                term.AddForFastInsert(weight, docId);
-            }
-        }
+            IsValid = isValid,
+            Version = version,
+            IsLegacy = false,
+            DocumentCount = (int)docCount,
+            TermCount = (int)termCount,
+            HasFst = flags.HasFlag(IndexPersistence.IndexFlags.HasFst),
+            HasShortQueryIndex = flags.HasFlag(IndexPersistence.IndexFlags.HasShortQueryIndex)
+        };
     }
 }
 
+/// <summary>
+/// Information about an index file's format.
+/// </summary>
+public sealed class IndexFormatInfo
+{
+    public bool IsValid { get; set; }
+    public uint Version { get; set; }
+    public bool IsLegacy { get; set; }
+    public int DocumentCount { get; set; }
+    public int TermCount { get; set; }
+    public bool HasFst { get; set; }
+    public bool HasShortQueryIndex { get; set; }
+    public string? ErrorMessage { get; set; }
+    
+    public override string ToString()
+    {
+        if (!IsValid)
+            return $"Invalid: {ErrorMessage ?? "Unknown error"}";
+        
+        return $"V{Version}: {DocumentCount} docs, {TermCount} terms" +
+               (HasFst ? ", FST" : "") +
+               (HasShortQueryIndex ? ", ShortQueryIdx" : "");
+    }
+}

@@ -159,7 +159,7 @@ public class SearchEngine : IDisposable
                 _vectorModel.BuildInvertedLists(cancellationToken: ct);
                 _isIndexed = true;
             }
-            _vectorModel.BuildTermPrefixTrie();
+            _vectorModel.BuildOptimizedIndexes();
         }
         finally
         {
