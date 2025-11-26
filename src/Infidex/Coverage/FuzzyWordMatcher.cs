@@ -29,20 +29,24 @@ internal static class FuzzyWordMatcher
             for (int i = 0; i < qCount; i++)
             {
                 if (!state.QActive[i]) continue;
-                var qSlice = state.QueryTokens[i];
+                StringSlice qSlice = state.QueryTokens[i];
                 int qLen = qSlice.Length;
                 
-                int minLen = Math.Max(minWordSize + 1, qLen - editDist);
+                // Skip query tokens that are too short for meaningful fuzzy matching
+                // but allow 2-char tokens since they can fuzzy-match 3-char words (e.g., "te" → "the")
+                if (qLen < minWordSize) continue;
+                
+                // Calculate the valid document word length range for this query token and edit distance
+                int minLen = Math.Max(minWordSize, qLen - editDist);
                 int maxLen = Math.Min(levenshteinMaxWordSize, qLen + editDist);
                 if (maxLen > 63) maxLen = 63;
-                if (qLen > maxLen || qLen < minLen) continue;
                 
                 ReadOnlySpan<char> qText = state.QuerySpan.Slice(qSlice.Offset, qSlice.Length);
                 
                 for (int j = 0; j < dCount; j++)
                 {
                     if (!state.DActive[j]) continue;
-                    var dSlice = state.UniqueDocTokens[j];
+                    StringSlice dSlice = state.UniqueDocTokens[j];
                     int dLen = dSlice.Length;
                     if (dLen > maxLen || dLen < minLen) continue;
                     

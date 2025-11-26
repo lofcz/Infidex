@@ -10,14 +10,14 @@ internal static class WholeWordMatcher
 
         for (int i = 0; i < qCount; i++)
         {
-            var qSlice = state.QueryTokens[i];
+            StringSlice qSlice = state.QueryTokens[i];
             
             int matchIndex = -1;
             for (int j = 0; j < dCount; j++)
             {
                 if (state.DActive[j])
                 {
-                    var dSlice = state.UniqueDocTokens[j];
+                    StringSlice dSlice = state.UniqueDocTokens[j];
                     if (dSlice.Hash == qSlice.Hash && dSlice.Length == qSlice.Length)
                     {
                         ReadOnlySpan<char> qText = state.QuerySpan.Slice(qSlice.Offset, qSlice.Length);
@@ -46,7 +46,7 @@ internal static class WholeWordMatcher
                 // Penalty: if doc token at position i doesn't match query token i
                 if (dCount > i)
                 {
-                    var dSliceI = state.UniqueDocTokens[i];
+                    StringSlice dSliceI = state.UniqueDocTokens[i];
                     if (dSliceI.Hash != qSlice.Hash || dSliceI.Length != qSlice.Length ||
                         !state.QuerySpan.Slice(qSlice.Offset, qSlice.Length).Equals(
                             state.DocSpan.Slice(dSliceI.Offset, dSliceI.Length), StringComparison.OrdinalIgnoreCase))

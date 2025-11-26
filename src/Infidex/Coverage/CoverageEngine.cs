@@ -16,14 +16,14 @@ public class CoverageEngine
     
     public byte CalculateCoverageScore(string query, string documentText, double lcsSum, out int wordHits)
     {
-        var result = CalculateCoverageInternal(query, documentText, lcsSum, out wordHits, 
+        CoverageResult result = CalculateCoverageInternal(query, documentText, lcsSum, out wordHits, 
             out _, out _, out _, out _, out _, out _, out _, out _, out _, out _);
         return result.CoverageScore;
     }
     
     public ushort CalculateRankedScore(string query, string documentText, double lcsSum, byte baseTfidfScore, out int wordHits)
     {
-        var result = CalculateCoverageInternal(query, documentText, lcsSum, out wordHits,
+        CoverageResult result = CalculateCoverageInternal(query, documentText, lcsSum, out wordHits,
             out int docTokenCount,
             out int termsWithAnyMatch,
             out int termsFullyMatched,
@@ -48,7 +48,7 @@ public class CoverageEngine
 
     public CoverageFeatures CalculateFeatures(string query, string documentText, double lcsSum)
     {
-        var result = CalculateCoverageInternal(
+        CoverageResult result = CalculateCoverageInternal(
             query,
             documentText,
             lcsSum,
@@ -200,7 +200,7 @@ public class CoverageEngine
             termMaxChars[i] = queryTokens[i].Length;
 
         // Build MatchState
-        var state = new MatchState
+        MatchState state = new MatchState
         {
             QueryTokens = queryTokens[..qCount],
             UniqueDocTokens = uniqueDocTokens[..dCount],

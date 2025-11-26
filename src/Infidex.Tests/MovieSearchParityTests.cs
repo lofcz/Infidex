@@ -768,6 +768,65 @@ public abstract class MovieSearchParityTestsBase
         Assert.AreEqual("As I Am", firstTitle,
             "Query 'as am' should prefer the title 'As I Am' that contains both query tokens as whole words.");
     }
+
+    [TestMethod]
+    public void TeMatrix_PrefersTheMatrix()
+    {
+        var engine = GetEngine();
+
+        // "te matrix" should match "The Matrix" because:
+        // - "te" is a prefix of "the" (edit distance 1 - missing 'h')
+        // - "matrix" is an exact match for "Matrix"
+        // This should beat "Matriarch" which only matches "matrix" -> "Matriarch" (prefix)
+        var result = engine.Search(new Query("te matrix", 10));
+        var records = result.Records;
+
+        Assert.IsTrue(records.Length > 0, "Should find results for 'te matrix'");
+
+        Console.WriteLine("Results for 'te matrix':");
+        for (int i = 0; i < Math.Min(10, records.Length); i++)
+        {
+            var doc = engine.GetDocument(records[i].DocumentId);
+            Console.WriteLine($"  [{records[i].Score}] {doc!.IndexedText}");
+        }
+
+        var topDoc = engine.GetDocument(records[0].DocumentId);
+        Assert.IsNotNull(topDoc);
+        
+        // "The Matrix" should be the top result, not "Matriarch"
+        Assert.AreEqual("The Matrix", topDoc!.IndexedText,
+            "Query 'te matrix' should prefer 'The Matrix' (te->the fuzzy, matrix exact) over 'Matriarch' (matrix->matriarch prefix only)");
+    }
+
+    [TestMethod]
+    public void TeMatri_PrefersTheMatrixOverMatriarch()
+    {
+        var engine = GetEngine();
+
+        // "te matri" should match "The Matrix" because:
+        // - "te" is a prefix/fuzzy match for "the"
+        // - "matri" is a prefix of both "Matrix" and "Matriarch"
+        // But "te" -> "the" gives us a second term match, which should win over
+        // "Matriarch" which only matches the "matri" term.
+        var result = engine.Search(new Query("te matri", 10));
+        var records = result.Records;
+
+        Assert.IsTrue(records.Length > 0, "Should find results for 'te matri'");
+
+        Console.WriteLine("Results for 'te matri':");
+        for (int i = 0; i < Math.Min(10, records.Length); i++)
+        {
+            var doc = engine.GetDocument(records[i].DocumentId);
+            Console.WriteLine($"  [{records[i].Score}] {doc!.IndexedText}");
+        }
+
+        var topDoc = engine.GetDocument(records[0].DocumentId);
+        Assert.IsNotNull(topDoc);
+        
+        // "The Matrix" should be the top result because both terms match
+        Assert.IsTrue(topDoc!.IndexedText.Contains("Matrix", StringComparison.OrdinalIgnoreCase),
+            $"Query 'te matri' should prefer 'The Matrix...' over 'Matriarch', but got '{topDoc.IndexedText}'");
+    }
 }
 
 /// <summary>

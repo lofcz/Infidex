@@ -24,8 +24,8 @@ internal static class JoinedWordMatcher
             }
             if (nextIdx == -1) break;
             
-            var q1 = state.QueryTokens[i];
-            var q2 = state.QueryTokens[nextIdx];
+            StringSlice q1 = state.QueryTokens[i];
+            StringSlice q2 = state.QueryTokens[nextIdx];
             int joinedLen = q1.Length + q2.Length;
             
             int matchIndex = -1;
@@ -33,7 +33,7 @@ internal static class JoinedWordMatcher
             {
                 if (state.DActive[j])
                 {
-                    var dSlice = state.UniqueDocTokens[j];
+                    StringSlice dSlice = state.UniqueDocTokens[j];
                     if (dSlice.Length == joinedLen)
                     {
                         ReadOnlySpan<char> dText = state.DocSpan.Slice(dSlice.Offset, dSlice.Length);
@@ -89,8 +89,8 @@ internal static class JoinedWordMatcher
             }
             if (nextIdx == -1) break;
             
-            var d1 = state.UniqueDocTokens[i];
-            var d2 = state.UniqueDocTokens[nextIdx];
+            StringSlice d1 = state.UniqueDocTokens[i];
+            StringSlice d2 = state.UniqueDocTokens[nextIdx];
             int joinedLen = d1.Length + d2.Length;
             
             int matchIndex = -1;
@@ -98,7 +98,7 @@ internal static class JoinedWordMatcher
             {
                 if (state.QActive[j])
                 {
-                    var qSlice = state.QueryTokens[j];
+                    StringSlice qSlice = state.QueryTokens[j];
                     if (qSlice.Length == joinedLen)
                     {
                         ReadOnlySpan<char> qText = state.QuerySpan.Slice(qSlice.Offset, qSlice.Length);
@@ -134,4 +134,6 @@ internal static class JoinedWordMatcher
         }
     }
 }
+
+
 

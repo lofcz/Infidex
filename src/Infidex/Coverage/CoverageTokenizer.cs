@@ -45,13 +45,13 @@ internal static class CoverageTokenizer
         for (int i = 0; i < rawCount; i++)
         {
             bool duplicate = false;
-            var current = tokens[i];
-            var currentSpan = textSpan.Slice(current.Offset, current.Length);
+            StringSlice current = tokens[i];
+            ReadOnlySpan<char> currentSpan = textSpan.Slice(current.Offset, current.Length);
             int currentHash = string.GetHashCode(currentSpan, StringComparison.OrdinalIgnoreCase);
             
             for (int j = 0; j < uniqueCount; j++)
             {
-                var existing = tokens[j];
+                StringSlice existing = tokens[j];
                 if (existing.Hash == currentHash && existing.Length == current.Length)
                 {
                     if (textSpan.Slice(existing.Offset, existing.Length).Equals(currentSpan, StringComparison.OrdinalIgnoreCase))
@@ -80,14 +80,14 @@ internal static class CoverageTokenizer
         
         for (int i = 0; i < rawCount; i++)
         {
-            var current = rawTokens[i];
-            var currentSpan = textSpan.Slice(current.Offset, current.Length);
+            StringSlice current = rawTokens[i];
+            ReadOnlySpan<char> currentSpan = textSpan.Slice(current.Offset, current.Length);
             int currentHash = string.GetHashCode(currentSpan, StringComparison.OrdinalIgnoreCase);
             
             bool duplicate = false;
             for (int j = 0; j < uniqueCount; j++)
             {
-                var existing = uniqueTokens[j];
+                StringSlice existing = uniqueTokens[j];
                 if (existing.Hash == currentHash && existing.Length == current.Length)
                 {
                     if (textSpan.Slice(existing.Offset, existing.Length).Equals(currentSpan, StringComparison.OrdinalIgnoreCase))

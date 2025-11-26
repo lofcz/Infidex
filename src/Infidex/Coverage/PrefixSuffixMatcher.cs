@@ -65,7 +65,7 @@ internal static class PrefixSuffixMatcher
             int i = qIndices[qi];
             if (!state.QActive[i]) continue;
             
-            var qSlice = state.QueryTokens[i];
+            StringSlice qSlice = state.QueryTokens[i];
             ReadOnlySpan<char> qText = state.QuerySpan.Slice(qSlice.Offset, qSlice.Length);
             
             for (int di = 0; di < activeDCount; di++)
@@ -73,7 +73,7 @@ internal static class PrefixSuffixMatcher
                 int j = dIndices[di];
                 if (!state.DActive[j]) continue;
                 
-                var dSlice = state.UniqueDocTokens[j];
+                StringSlice dSlice = state.UniqueDocTokens[j];
                 if (qSlice.Length == dSlice.Length) continue;
                 
                 ReadOnlySpan<char> dText = state.DocSpan.Slice(dSlice.Offset, dSlice.Length);
@@ -142,7 +142,7 @@ internal static class PrefixSuffixMatcher
             int i = qIndices[qi];
             if (!state.QActive[i]) continue;
             
-            var qSlice = state.QueryTokens[i];
+            StringSlice qSlice = state.QueryTokens[i];
             ReadOnlySpan<char> qText = state.QuerySpan.Slice(qSlice.Offset, qSlice.Length);
             
             // Fuzzy matching: requires length >= 4, or >= 2 for the last query term
@@ -154,7 +154,7 @@ internal static class PrefixSuffixMatcher
                 int j = dIndices[di];
                 if (!state.DActive[j]) continue;
                 
-                var dSlice = state.UniqueDocTokens[j];
+                StringSlice dSlice = state.UniqueDocTokens[j];
                 if (qSlice.Length >= dSlice.Length) continue;
                 
                 ReadOnlySpan<char> dText = state.DocSpan.Slice(dSlice.Offset, dSlice.Length);
