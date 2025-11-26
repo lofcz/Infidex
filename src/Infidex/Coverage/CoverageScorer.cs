@@ -37,6 +37,14 @@ internal static class CoverageScorer
         byte coverageScore = (byte)Math.Min(num11 / queryLen * 255.0, 255.0);
         
         float sumCi = 0f;
+        float weightedCoverageSum = 0f;
+        float totalWeight = 0f;
+        float idfWeightedSum = 0f;
+        float totalIdf = 0f;
+        float missingIdf = 0f;
+        int totalTermChars = 0;
+        float lastTermCi = 0f;
+        float lastTermIdf = 0f;
         int firstMatchIndex = -1;
         int minPos = int.MaxValue;
         int maxPos = -1;
@@ -44,9 +52,33 @@ internal static class CoverageScorer
         for (int i = 0; i < qCount; i++)
         {
             if (state.TermMaxChars[i] <= 0) continue;
+            
             float ci = Math.Min(1.0f, state.TermMatchedChars[i] / state.TermMaxChars[i]);
             sumCi += ci;
             if (ci > 0) termsWithAnyMatch++;
+            
+            totalTermChars += state.TermMaxChars[i];
+            
+            // Weight by term length (longer terms are more informative)
+            int termLen = state.TermMaxChars[i];
+            float termWeight = termLen;
+            totalWeight += termWeight;
+            weightedCoverageSum += ci * termWeight;
+            
+            // IDF-based weighting: use information content instead of raw length
+            float idf = state.TermIdf[i];
+            totalIdf += idf;
+            idfWeightedSum += ci * idf;
+            if (ci < 1.0f)
+            {
+                missingIdf += (1.0f - ci) * idf;
+            }
+            
+            if (i == qCount - 1)
+            {
+                lastTermCi = ci;
+                lastTermIdf = idf;
+            }
             
             bool isFullyMatched = state.TermMatchedChars[i] >= (state.TermMaxChars[i] - 0.01f);
             if (isFullyMatched) termsFullyMatched++;
@@ -64,6 +96,24 @@ internal static class CoverageScorer
                 if (state.TermFirstPos[i] < minPos) minPos = state.TermFirstPos[i];
                 if (state.TermFirstPos[i] > maxPos) maxPos = state.TermFirstPos[i];
             }
+        }
+        
+        // Normalize weighted coverage by total weight
+        float normalizedWeightedCoverage = totalWeight > 0f ? weightedCoverageSum / totalWeight : 0f;
+        
+        // Normalize IDF-weighted coverage
+        float idfCoverage = totalIdf > 0f ? idfWeightedSum / totalIdf : 0f;
+        
+        // Detect if last term is likely type-ahead using information share
+        // A term is type-ahead if it contributes less information than we would
+        // expect from an "average" term in the query. We approximate this by comparing
+        // the last term's IDF share to 1/(q+1), where q is the number of unique query terms.
+        bool lastTermIsTypeAhead = false;
+        if (qCount > 0 && totalIdf > 0f)
+        {
+            float idfShare = lastTermIdf / totalIdf;
+            float idfThreshold = 1f / (qCount + 1);
+            lastTermIsTypeAhead = idfShare <= idfThreshold;
         }
 
         // Single-term LCS boost
@@ -134,7 +184,7 @@ internal static class CoverageScorer
             }
         }
         
-        return new CoverageResult(coverageScore, qCount, firstMatchIndex, sumCi);
+        return new CoverageResult(coverageScore, qCount, firstMatchIndex, sumCi, lastTermCi, normalizedWeightedCoverage, lastTermIsTypeAhead, idfCoverage, totalIdf, missingIdf);
     }
 
     public static ushort CalculateRankedScore(

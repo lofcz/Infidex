@@ -1,5 +1,8 @@
 using System.Buffers;
+using System.Collections.Concurrent;
 using Infidex.Tokenization;
+using Infidex.Core;
+using Infidex.Indexing;
 
 namespace Infidex.Coverage;
 
@@ -7,11 +10,24 @@ public class CoverageEngine
 {
     private readonly Tokenizer _tokenizer;
     private readonly CoverageSetup _setup;
+    private TermCollection? _termCollection;
+    private int _totalDocuments;
+    private readonly ConcurrentDictionary<string, float[]> _queryIdfCache = new();
     
     public CoverageEngine(Tokenizer tokenizer, CoverageSetup? setup = null)
     {
         _tokenizer = tokenizer;
         _setup = setup ?? CoverageSetup.CreateDefault();
+    }
+    
+    /// <summary>
+    /// Sets the term collection and document count for IDF computation.
+    /// Should be called once after indexing is complete.
+    /// </summary>
+    public void SetCorpusStatistics(TermCollection termCollection, int totalDocuments)
+    {
+        _termCollection = termCollection;
+        _totalDocuments = totalDocuments;
     }
     
     public byte CalculateCoverageScore(string query, string documentText, double lcsSum, out int wordHits)
@@ -79,7 +95,13 @@ public class CoverageEngine
             suffixPrefixRun,
             phraseSpan,
             precedingStrictCount,
-            lastTokenHasPrefix);
+            lastTokenHasPrefix,
+            result.LastTermCi,
+            result.WeightedCoverage,
+            result.LastTermIsTypeAhead,
+            result.IdfCoverage,
+            result.TotalIdf,
+            result.MissingIdf);
     }
 
     private CoverageResult CalculateCoverageInternal(string query, string documentText, double lcsSum, 
@@ -196,8 +218,40 @@ public class CoverageEngine
             : (termFirstPosArray = ArrayPool<int>.Shared.Rent(qCount));
         termFirstPos[..qCount].Fill(-1);
 
-        for (int i = 0; i < qCount; i++) 
-            termMaxChars[i] = queryTokens[i].Length;
+        float[]? termIdfArray = null;
+        Span<float> termIdf = qCount <= CoverageTokenizer.MaxStackTerms
+            ? stackalloc float[qCount]
+            : (termIdfArray = ArrayPool<float>.Shared.Rent(qCount));
+
+        // Precompute per-query term IDF once per distinct query text to avoid
+        // repeating n-gram lookups for every candidate document.
+        if (_termCollection != null && _totalDocuments > 0)
+        {
+            if (!_queryIdfCache.TryGetValue(query, out float[]? cached) || cached.Length < qCount)
+            {
+                cached = new float[qCount];
+                for (int i = 0; i < qCount; i++)
+                {
+                    cached[i] = ComputeTermIdf(queryTokens[i], querySpan);
+                }
+                _queryIdfCache[query] = cached;
+            }
+
+            for (int i = 0; i < qCount; i++)
+            {
+                termMaxChars[i] = queryTokens[i].Length;
+                termIdf[i] = cached[i];
+            }
+        }
+        else
+        {
+            // Fallback: approximate IDF from term length only.
+            for (int i = 0; i < qCount; i++)
+            {
+                termMaxChars[i] = queryTokens[i].Length;
+                termIdf[i] = MathF.Log2(termMaxChars[i] + 1);
+            }
+        }
 
         // Build MatchState
         MatchState state = new MatchState
@@ -212,6 +266,7 @@ public class CoverageEngine
             TermHasJoined = termHasJoined[..qCount],
             TermHasPrefix = termHasPrefix[..qCount],
             TermFirstPos = termFirstPos[..qCount],
+            TermIdf = termIdf[..qCount],
             QuerySpan = querySpan,
             DocSpan = docSpan,
             QCount = qCount,
@@ -246,6 +301,7 @@ public class CoverageEngine
             if (termHasJoinedArray != null) ArrayPool<bool>.Shared.Return(termHasJoinedArray);
             if (termHasPrefixArray != null) ArrayPool<bool>.Shared.Return(termHasPrefixArray);
             if (termFirstPosArray != null) ArrayPool<int>.Shared.Return(termFirstPosArray);
+            if (termIdfArray != null) ArrayPool<float>.Shared.Return(termIdfArray);
         }
 
         wordHits = state.WordHits;
@@ -264,5 +320,50 @@ public class CoverageEngine
             out phraseSpan,
             out precedingStrictCount,
             out lastTokenHasPrefix);
+    }
+    
+    /// <summary>
+    /// Computes IDF for a query term by averaging IDF over its constituent n-grams.
+    /// Returns a default value if term collection is not available.
+    /// </summary>
+    private float ComputeTermIdf(StringSlice termSlice, ReadOnlySpan<char> querySpan)
+    {
+        if (_termCollection == null || _totalDocuments == 0)
+        {
+            // Fallback: use term length as a proxy for information content
+            return MathF.Log2(termSlice.Length + 1);
+        }
+        
+        ReadOnlySpan<char> termSpan = querySpan.Slice(termSlice.Offset, termSlice.Length);
+        
+        // Generate n-grams for this term and compute average IDF
+        int[] ngramSizes = _tokenizer.IndexSizes;
+        float idfSum = 0f;
+        int ngramCount = 0;
+        
+        foreach (int size in ngramSizes)
+        {
+            if (termSpan.Length < size)
+                continue;
+                
+            for (int i = 0; i <= termSpan.Length - size; i++)
+            {
+                ReadOnlySpan<char> ngram = termSpan.Slice(i, size);
+                string ngramText = new string(ngram);
+                
+                Term? term = _termCollection.GetTerm(ngramText);
+                if (term != null && term.DocumentFrequency > 0)
+                {
+                    float idf = Bm25Scorer.ComputeIdf(_totalDocuments, term.DocumentFrequency);
+                    idfSum += idf;
+                    ngramCount++;
+                }
+            }
+        }
+        
+        // Return average IDF, or a default based on term length if no n-grams found
+        return ngramCount > 0 
+            ? idfSum / ngramCount 
+            : MathF.Log2(termSpan.Length + 1);
     }
 }

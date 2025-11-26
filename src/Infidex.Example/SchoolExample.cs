@@ -14,7 +14,7 @@ public class SchoolRecord
 
 public class SchoolExample
 {
-    public static void Run()
+    public static void Run(ExampleMode mode = ExampleMode.Repl)
     {
         Console.WriteLine("Loading schools from JSON...");
         
@@ -53,26 +53,42 @@ public class SchoolExample
         engine.IndexDocuments(documents);
         sw.Stop();
 
-        Console.WriteLine($"Indexing complete in {sw.ElapsedMilliseconds}ms.");
+        long elapsedMs = sw.ElapsedMilliseconds;
+        double elapsedSec = sw.Elapsed.TotalSeconds;
+        double docsPerSec = elapsedSec > 0 ? schoolNames.Count / elapsedSec : 0;
 
-        // Perform example queries
-        SearchAndPrint(engine, new Query("sciozlín"));
-        SearchAndPrint(engine, new Query("základní škola"));
-        SearchAndPrint(engine, new Query("mate"));
+        Console.WriteLine(
+            $"Indexing complete: {schoolNames.Count:N0} schools in {elapsedMs:N0} ms (~{docsPerSec:N0} docs/s).");
+        
+        // Index-only mode: stop after building the index.
+        if (mode == ExampleMode.Index)
+            return;
 
-        while (true)
+        // Perform predefined example queries in Test/Repl modes.
+        if (mode is ExampleMode.Test or ExampleMode.Repl)
         {
-            Console.Write($"> ");
-            string? input = Console.ReadLine();
+            SearchAndPrint(engine, new Query("sciozlín"));
+            SearchAndPrint(engine, new Query("základní škola"));
+            SearchAndPrint(engine, new Query("mate"));
+        }
 
-            if (input is "q" or "!q" or "quit" or "exit")
+        // Interactive REPL only in Repl mode.
+        if (mode == ExampleMode.Repl)
+        {
+            while (true)
             {
-                break;
-            }
-            
-            if (!string.IsNullOrWhiteSpace(input))
-            {
-                SearchAndPrint(engine, new Query(input));
+                Console.Write($"> ");
+                string? input = Console.ReadLine();
+
+                if (input is "q" or "!q" or "quit" or "exit")
+                {
+                    break;
+                }
+                
+                if (!string.IsNullOrWhiteSpace(input))
+                {
+                    SearchAndPrint(engine, new Query(input));
+                }
             }
         }
     }

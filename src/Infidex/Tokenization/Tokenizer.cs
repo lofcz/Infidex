@@ -58,25 +58,57 @@ public class Tokenizer
     }
     
     /// <summary>
-    /// Tokenizes text for indexing (builds complete shingle list)
+    /// Tokenizes text for indexing (builds complete shingle list).
     /// </summary>
-    /// <param name="text">The text to tokenize</param>
-    /// <param name="isSegmentContinuation">True if this is a continuation segment (segment number > 0)</param>
+    /// <param name="text">The text to tokenize.</param>
+    /// <param name="isSegmentContinuation">True if this is a continuation segment (segment number &gt; 0).</param>
     public List<Shingle> TokenizeForIndexing(string text, bool isSegmentContinuation = false)
     {
+        // Keep the legacy allocation-heavy behavior for compatibility.
+        // The high-performance indexing path uses span-based n-gram enumeration
+        // via EnumerateNGramsForIndexing instead.
         if (TextNormalizer != null)
         {
             text = TextNormalizer.Normalize(text);
         }
         
         // Continuation segments skip start padding (they continue from previous segment)
-        int actualStartPad = isSegmentContinuation ? 0 : StartPadSize;
         string startPad = isSegmentContinuation ? "" : _startPadding;
         
         // Add padding
         string paddedText = startPad + text + _stopPadding;
         
         return GenerateShingles(paddedText);
+    }
+    
+    /// <summary>
+    /// Tokenizes text for indexing using a span-based, allocation-light n-gram
+    /// enumerator. This is intended for high-performance bulk indexing and is
+    /// used by the unified indexer instead of building Shingle objects.
+    /// </summary>
+    /// <param name="text">Raw text to tokenize (typically the concatenated searchable fields).</param>
+    /// <param name="isSegmentContinuation">True if this is a continuation segment (segment number &gt; 0).</param>
+    /// <param name="visitor">
+    /// Callback invoked for each n-gram with its compact <see cref="NGramKey"/>
+    /// and starting position within the padded text.
+    /// </param>
+    internal void EnumerateNGramsForIndexing(string text, bool isSegmentContinuation, Action<NGramKey, int> visitor)
+    {
+        if (string.IsNullOrEmpty(text))
+            return;
+
+        if (TextNormalizer != null)
+        {
+            text = TextNormalizer.Normalize(text);
+        }
+
+        // Continuation segments skip start padding (they continue from previous segment)
+        string startPad = isSegmentContinuation ? "" : _startPadding;
+
+        // Add padding
+        string paddedText = startPad + text + _stopPadding;
+
+        GenerateNGrams(paddedText.AsSpan(), visitor);
     }
     
     /// <summary>
@@ -167,22 +199,71 @@ public class Tokenizer
     }
     
     /// <summary>
-    /// Extracts all n-grams of a specific size from the text
+    /// Extracts all n-grams of a specific size from the text into shingle objects.
+    /// This is the legacy allocation-heavy path used by <see cref="TokenizeForIndexing"/>
+    /// and <see cref="TokenizeForSearch"/> when building <see cref="Shingle"/> lists.
     /// </summary>
     private static void ExtractNGrams(string text, int n, List<Shingle> shingles)
     {
         if (text.Length < n)
             return;
         
-        for (int i = 0; i <= text.Length - n; i++)
+        ReadOnlySpan<char> span = text.AsSpan();
+        
+        for (int i = 0; i <= span.Length - n; i++)
         {
-            string ngram = text.Substring(i, n);
+            ReadOnlySpan<char> ngramSpan = span.Slice(i, n);
             
             // Skip if all characters are padding
-            if (IsAllPadding(ngram))
+            if (IsAllPadding(ngramSpan))
                 continue;
             
+            string ngram = new string(ngramSpan);
             shingles.Add(new Shingle(ngram, 1, i));
+        }
+    }
+
+    /// <summary>
+    /// Generates n-grams for high-performance indexing, invoking the visitor
+    /// callback for each n-gram as a compact <see cref="NGramKey"/>.
+    /// </summary>
+    private void GenerateNGrams(ReadOnlySpan<char> text, Action<NGramKey, int> visitor)
+    {
+        // Determine max n-gram size to extract
+        int maxSize = IndexSizes[^1]; // Last element
+        if (text.Length <= IndexSizes[0])
+        {
+            maxSize = IndexSizes[0];
+        }
+
+        foreach (int size in IndexSizes)
+        {
+            ExtractNGrams(text, size, visitor);
+
+            if (size == maxSize)
+                break;
+        }
+    }
+
+    /// <summary>
+    /// Extracts all n-grams of a specific size from the text for the
+    /// high-performance indexing path.
+    /// </summary>
+    private static void ExtractNGrams(ReadOnlySpan<char> text, int n, Action<NGramKey, int> visitor)
+    {
+        if (text.Length < n)
+            return;
+
+        for (int i = 0; i <= text.Length - n; i++)
+        {
+            ReadOnlySpan<char> ngramSpan = text.Slice(i, n);
+
+            // Skip if all characters are padding
+            if (IsAllPadding(ngramSpan))
+                continue;
+
+            NGramKey key = new NGramKey(ngramSpan);
+            visitor(key, i);
         }
     }
     
@@ -231,9 +312,14 @@ public class Tokenizer
     }
     
     /// <summary>
-    /// Checks if a string consists only of padding characters
+    /// Checks if a string consists only of padding characters.
     /// </summary>
-    private static bool IsAllPadding(string text)
+    private static bool IsAllPadding(string text) => IsAllPadding(text.AsSpan());
+
+    /// <summary>
+    /// Checks if a span consists only of padding characters.
+    /// </summary>
+    private static bool IsAllPadding(ReadOnlySpan<char> text)
     {
         foreach (char c in text)
         {

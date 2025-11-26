@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Runtime.CompilerServices;
 using Infidex.Core;
 
@@ -112,77 +113,93 @@ internal sealed class ShortQueryResolver
     /// <summary>
     /// Builds champion lists (top-N documents) for each prefix using the same
     /// scoring logic as Resolve. This runs once at index finalization time.
+    /// Work is parallelized across prefixes to take advantage of multiple cores.
     /// </summary>
     private Dictionary<string, ScoreEntry[]> BuildChampionLists()
     {
-        Dictionary<string, ScoreEntry[]> result = new Dictionary<string, ScoreEntry[]>(StringComparer.Ordinal);
-        
-        foreach ((string prefix, PrefixPostingList postingList) in _prefixIndex.GetAllPrefixes())
-        {
-            if (string.IsNullOrEmpty(prefix))
-                continue;
-            
-            ReadOnlySpan<char> querySpan = prefix.AsSpan();
-            
-            // Group postings by document and calculate scores (same logic as Resolve)
-            Dictionary<int, DocumentScore> docScores = new Dictionary<int, DocumentScore>();
-            
-            foreach (ref readonly PrefixPosting posting in postingList.Postings)
+        // Materialize all prefixes so we can safely parallelize without
+        // touching the underlying index concurrently.
+        (string Prefix, PrefixPostingList List)[] prefixes =
+            _prefixIndex.GetAllPrefixes().ToArray();
+
+        if (prefixes.Length == 0)
+            return new Dictionary<string, ScoreEntry[]>(StringComparer.Ordinal);
+
+        ConcurrentDictionary<string, ScoreEntry[]> result = new ConcurrentDictionary<string, ScoreEntry[]>(StringComparer.Ordinal);
+
+        Parallel.ForEach(
+            prefixes,
+            new ParallelOptions { MaxDegreeOfParallelism = Environment.ProcessorCount },
+            entry =>
             {
-                int docId = posting.DocumentId;
-                
-                if (!docScores.TryGetValue(docId, out DocumentScore score))
+                string prefix = entry.Prefix;
+                PrefixPostingList postingList = entry.List;
+
+                if (string.IsNullOrEmpty(prefix) || postingList.Count == 0)
+                    return;
+
+                ReadOnlySpan<char> querySpan = prefix.AsSpan();
+
+                // Group postings by document and calculate scores (same logic as Resolve),
+                // but using only local state to avoid contention.
+                Dictionary<int, DocumentScore> docScores = new Dictionary<int, DocumentScore>();
+
+                foreach (ref readonly PrefixPosting posting in postingList.Postings)
+                {
+                    int docId = posting.DocumentId;
+
+                    if (!docScores.TryGetValue(docId, out DocumentScore score))
+                    {
+                        Document? doc = _documents.GetDocument(docId);
+                        if (doc == null || doc.Deleted)
+                            continue;
+
+                        score = new DocumentScore { DocumentKey = doc.DocumentKey };
+                        docScores[docId] = score;
+                    }
+
+                    score.Occurrences++;
+                    if (posting.IsWordStart)
+                    {
+                        score.WordStartCount++;
+                        if (posting.Position == 0)
+                            score.HasFirstPosition = true;
+                        if (!score.HasWordStart || posting.Position < score.FirstWordStartPosition)
+                        {
+                            score.HasWordStart = true;
+                            score.FirstWordStartPosition = posting.Position;
+                        }
+                    }
+                }
+
+                if (docScores.Count == 0)
+                    return;
+
+                List<ScoreEntry> scores = new List<ScoreEntry>(docScores.Count);
+
+                foreach ((int docId, DocumentScore score) in docScores)
                 {
                     Document? doc = _documents.GetDocument(docId);
                     if (doc == null || doc.Deleted)
                         continue;
-                    
-                    score = new DocumentScore { DocumentKey = doc.DocumentKey };
-                    docScores[docId] = score;
+
+                    ushort finalScore = CalculateFinalScore(querySpan, doc, score);
+                    scores.Add(new ScoreEntry(finalScore, score.DocumentKey));
                 }
-                
-                score.Occurrences++;
-                if (posting.IsWordStart)
-                {
-                    score.WordStartCount++;
-                    if (posting.Position == 0)
-                        score.HasFirstPosition = true;
-                    if (!score.HasWordStart || posting.Position < score.FirstWordStartPosition)
-                    {
-                        score.HasWordStart = true;
-                        score.FirstWordStartPosition = posting.Position;
-                    }
-                }
-            }
-            
-            if (docScores.Count == 0)
-                continue;
-            
-            List<ScoreEntry> scores = new List<ScoreEntry>(docScores.Count);
-            
-            foreach ((int docId, DocumentScore score) in docScores)
-            {
-                Document? doc = _documents.GetDocument(docId);
-                if (doc == null || doc.Deleted)
-                    continue;
-                
-                ushort finalScore = CalculateFinalScore(querySpan, doc, score);
-                scores.Add(new ScoreEntry(finalScore, score.DocumentKey));
-            }
-            
-            if (scores.Count == 0)
-                continue;
-            
-            // Sort by score descending and take top-N
-            scores.Sort((a, b) => b.Score.CompareTo(a.Score));
-            
-            if (scores.Count > ChampionListSize)
-                scores.RemoveRange(ChampionListSize, scores.Count - ChampionListSize);
-            
-            result[prefix] = scores.ToArray();
-        }
-        
-        return result;
+
+                if (scores.Count == 0)
+                    return;
+
+                // Sort by score descending and take top-N
+                scores.Sort((a, b) => b.Score.CompareTo(a.Score));
+
+                if (scores.Count > ChampionListSize)
+                    scores.RemoveRange(ChampionListSize, scores.Count - ChampionListSize);
+
+                result[prefix] = scores.ToArray();
+            });
+
+        return new Dictionary<string, ScoreEntry[]>(result, StringComparer.Ordinal);
     }
     
     /// <summary>

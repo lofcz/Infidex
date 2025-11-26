@@ -15,6 +15,7 @@ internal ref struct MatchState
     public Span<bool> TermHasJoined;
     public Span<bool> TermHasPrefix;
     public Span<int> TermFirstPos;
+    public Span<float> TermIdf;  // IDF (information content) per query term
 
     public ReadOnlySpan<char> QuerySpan;
     public ReadOnlySpan<char> DocSpan;

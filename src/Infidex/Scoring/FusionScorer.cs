@@ -69,9 +69,35 @@ internal static class FusionScorer
 
         if (hasPartialCoverage && n >= 2)
         {
-            if (CheckStemEvidence(queryTokens, docTokens, minStemLength))
+            bool hasStemEvidence = CheckStemEvidence(queryTokens, docTokens, minStemLength);
+            
+            if (hasStemEvidence)
             {
                 precedence |= 128;
+            }
+            else
+            {
+                // When exactly one term is unmatched, we compare how much *information*
+                // is missing versus how many terms are missing. If the information loss
+                // is smaller than what raw coordinate coverage suggests, we allow a
+                // precedence boost to compensate.
+                int unmatchedTerms = features.TermsCount - features.TermsWithAnyMatch;
+                bool lastTermMatched = features.LastTokenHasPrefix ||
+                                      (features.TermsCount > 0 && features.TermsWithAnyMatch == features.TermsCount);
+                
+                bool canBoost = (lastTermMatched || !features.LastTermIsTypeAhead) &&
+                                features.TotalIdf > 0f;
+                
+                if (unmatchedTerms == 1 && canBoost)
+                {
+                    float missingInfoRatio = features.MissingIdf / features.TotalIdf;
+                    float termGap = 1f - coverageRatio; // fraction of unmatched terms
+                    
+                    if (missingInfoRatio < termGap)
+                    {
+                        precedence |= 8;  // Boost to overcome phrase-run bonuses
+                    }
+                }
             }
         }
 
@@ -281,6 +307,8 @@ internal static class FusionScorer
     {
         float avgCi = features.TermsCount > 0 ? features.SumCi / features.TermsCount : 0f;
         float semantic;
+        
+        bool hasPartialCoverage = coverageRatio > 0f && coverageRatio < 1f;
 
         if (isSingleTerm)
         {
@@ -293,13 +321,26 @@ internal static class FusionScorer
         }
         else
         {
+            // Use IDF-weighted coverage when available and informative.
+            // For partial coverage where exactly one term is unmatched, prefer IDF coverage
+            // if it's higher (indicating matched terms are more informative than missing ones).
+            int unmatchedTerms = features.TermsCount - features.TermsWithAnyMatch;
+            bool lastTermMatched = features.LastTokenHasPrefix || 
+                                  (features.TermsCount > 0 && features.TermsWithAnyMatch == features.TermsCount);
+            bool canUseIdf = (lastTermMatched || !features.LastTermIsTypeAhead) && 
+                            features.TotalIdf > 0f;
+            
+            bool useIdfCoverage = hasPartialCoverage && unmatchedTerms == 1 && canUseIdf &&
+                                 features.IdfCoverage > coverageRatio;
+            
+            float baseCoverage = useIdfCoverage ? features.IdfCoverage : avgCi;
+                
             float density = (float)features.WordHits / features.DocTokenCount;
-            semantic = avgCi * density;
+            semantic = baseCoverage * density;
             semantic = ApplyIntentBonus(semantic, queryTokens, docTokens, features);
             semantic = ApplyTrailingTermBonus(semantic, queryTokens, docTokens);
         }
 
-        bool hasPartialCoverage = coverageRatio > 0f && coverageRatio < 1f;
         float coverageGap = 1f - coverageRatio;
 
         if (hasPartialCoverage && bm25Score >= coverageGap)

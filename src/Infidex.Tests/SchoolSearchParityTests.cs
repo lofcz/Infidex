@@ -72,6 +72,74 @@ public class SchoolSearchParityTests
     private static SearchEngine GetEngine() => _schoolEngine!;
 
     /// <summary>
+    /// Test position-independence: "bělohrad" (8 chars, specific town) should beat "lázně" (5 chars, common)
+    /// regardless of where "bělohrad" appears in the query. Tests multiple query permutations.
+    /// The engine should recognize that matching the longer, more specific term is more informative.
+    /// </summary>
+    [TestMethod]
+    public void MaterskaSkolaWithBelohrad_PrefersBelohradskaSkola_AllPermutations()
+    {
+        var engine = GetEngine();
+        const string targetName = "Bělohradská mateřská škola";
+
+        // Test multiple permutations - "bělohrad" in different positions
+        string[] queries = new[]
+        {
+            "mateřská škola lázně bělohrad",     // bělohrad at end (type-ahead position)
+            "mateřská bělohrad škola lázně",     // bělohrad in middle
+            "bělohrad mateřská škola lázně",     // bělohrad at start
+            "bělohrad lázně mateřská škola"      // different ordering
+        };
+
+        foreach (string query in queries)
+        {
+            var result = engine.Search(new Query(query, 20));
+            var records = result.Records;
+
+            Assert.IsTrue(records.Length > 0, $"Should return some schools for '{query}'.");
+
+            Console.WriteLine($"\nSearch results for '{query}' (Top 10 shown):");
+            for (int i = 0; i < Math.Min(10, records.Length); i++)
+            {
+                var doc = engine.GetDocument(records[i].DocumentId);
+                Console.WriteLine($"  {i + 1}. [{records[i].Score}] {doc!.IndexedText}");
+            }
+
+            int targetIndex = -1;
+            int targetScore = -1;
+
+            for (int i = 0; i < records.Length; i++)
+            {
+                var doc = engine.GetDocument(records[i].DocumentId);
+                string title = doc!.IndexedText;
+
+                if (title.Contains(targetName, StringComparison.OrdinalIgnoreCase))
+                {
+                    targetIndex = i;
+                    targetScore = records[i].Score;
+                    break;
+                }
+            }
+
+            Assert.IsTrue(targetIndex >= 0, $"Should find '{targetName}' for '{query}'.");
+            
+            Console.WriteLine($"Target '{targetName}' found at index {targetIndex} with score {targetScore}");
+
+            // Requirement: Bělohradská mateřská škola must be first for ALL permutations
+            Assert.AreEqual(0, targetIndex,
+                $"'{targetName}' must be the TOP result for '{query}', but appeared at index {targetIndex}.");
+
+            // Requirement 2: It must have a strictly higher score than anything else
+            for (int i = 1; i < records.Length; i++)
+            {
+                Assert.IsTrue(targetScore > records[i].Score,
+                    $"'{targetName}' (score={targetScore}) should score higher than '{engine.GetDocument(records[i].DocumentId)!.IndexedText}' (score={records[i].Score}) for '{query}'.");
+            }
+        }
+    }
+
+
+    /// <summary>
     /// "sciozlí" should give ScioŠkola Zlín a HIGHER score than ScioŠkola Kolín.
     /// The query suffix "zlí" strongly matches "Zlín" but only weakly matches "Kolín" (just "lí").
     /// </summary>

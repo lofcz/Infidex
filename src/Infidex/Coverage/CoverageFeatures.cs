@@ -17,6 +17,12 @@ public readonly struct CoverageFeatures
     public readonly int PhraseSpan;
     public readonly int PrecedingStrictCount;
     public readonly bool LastTokenHasPrefix;
+    public readonly float LastTermCi;
+    public readonly float WeightedCoverage;
+    public readonly bool LastTermIsTypeAhead;
+    public readonly float IdfCoverage;      // Information-weighted coverage (IDF-based)
+    public readonly float TotalIdf;         // Total information content of query
+    public readonly float MissingIdf;       // Information content of unmatched terms
 
     public CoverageFeatures(
         byte coverageScore,
@@ -33,7 +39,13 @@ public readonly struct CoverageFeatures
         int suffixPrefixRun,
         int phraseSpan,
         int precedingStrictCount = 0,
-        bool lastTokenHasPrefix = false)
+        bool lastTokenHasPrefix = false,
+        float lastTermCi = 0f,
+        float weightedCoverage = 0f,
+        bool lastTermIsTypeAhead = false,
+        float idfCoverage = 0f,
+        float totalIdf = 0f,
+        float missingIdf = 0f)
     {
         CoverageScore = coverageScore;
         TermsCount = termsCount;
@@ -50,5 +62,11 @@ public readonly struct CoverageFeatures
         PhraseSpan = phraseSpan;
         PrecedingStrictCount = precedingStrictCount;
         LastTokenHasPrefix = lastTokenHasPrefix;
+        LastTermCi = lastTermCi;
+        WeightedCoverage = weightedCoverage;
+        LastTermIsTypeAhead = lastTermIsTypeAhead;
+        IdfCoverage = idfCoverage;
+        TotalIdf = totalIdf;
+        MissingIdf = missingIdf;
     }
 }

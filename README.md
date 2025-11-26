@@ -249,20 +249,26 @@ var query = new Query("comedy", maxResults: 20)
 
 ## How It Works
 
-Infidex uses a **data-agnostic lexicographic ranking model** that relies entirely on structural and positional properties of the match, no collection statistics (like IDF) influence the final ranking. This ensures explainable, intuitive results regardless of the corpus.
+Infidex uses a **lexicographic ranking model** where:
+- **Precedence** is driven by structural and positional properties (coverage, phrase runs, anchor positions, etc.).
+- **Semantic score** is refined using corpus-derived weights (inverse document frequency over character n‑grams), without any per-dataset manual tuning.
+
+Concretely, each query term $q_i$ is assigned a weight
+
+$$
+I_i \approx \log_2\frac{N}{\mathrm{df}_i}
+$$
+
+where $N$ is the number of documents and $\mathrm{df}_i$ is the document frequency of the term’s character n‑grams. Rarer terms get higher weights and therefore contribute more strongly to coverage and fusion decisions.
 
 ### Three-Stage Search Pipeline
 
 **Stage 1: BM25+ Candidate Generation**
 - Tokenizes text into character n-grams (2-grams + 3-grams)
 - Builds inverted index with document frequencies
-- Uses **BM25+** as the information retrieval backbone with parameters $k_1 = 1.2$, $b = 0.75$, $\delta = 1.0$
-- BM25+ scoring with L2-normalized term weights:
+- BM25+ scoring backbone with L2-normalized term weights:
 
 $$\text{BM25+}(q, d) = \sum_{t \in q} \text{IDF}(t) \cdot \left( \frac{f(t,d) \cdot (k_1 + 1)}{f(t,d) + k_1 \cdot (1 - b + b \cdot \frac{|d|}{\text{avgdl}})} + \delta \right)$$
-
-- Ultra-fast with byte-quantized weights (4x memory savings)
-- Produces top-K candidates for Stage 2 refinement
 
 Formally, let $V$ be the set of all indexed terms over alphabet $\Sigma$. Infidex builds a deterministic finite-state transducer
 
@@ -287,7 +293,7 @@ with time complexity $O(|p| + |\mathrm{Pref}(p)|)$ and $O(|s| + |\mathrm{Suff}(s
 - Applied to top-K candidates from Stage 1
 - Tracks **per-term coverage** for each query word using 5 algorithms:
   - Exact whole-word matching
-  - Fuzzy word matching (adaptive Damerau-Levenshtein)
+  - Fuzzy word matching (Damerau–Levenshtein with an edit radius adapted from a binomial typo model)
   - Joined/split word detection
   - Prefix/suffix matching (prefixes weighted higher than suffixes)
   - LCS (Longest Common Subsequence) fallback when no word-level match exists
@@ -302,6 +308,34 @@ where $m_i$ is the number of matched characters for term $i$.
 $$C_{\text{coord}} = \frac{1}{n} \sum_{i=1}^{n} c_i$$
 
 - Extracts structural features: phrase runs, anchor token positions, lexical perfection
+
+
+On top of raw per-term coverage, Infidex tracks how much **information mass** from the query is actually matched:
+
+- For each query term $q_i$, we compute a coverage score $c_i \in [0,1]$ and an information weight $I_i$ as above:
+  
+  $$
+  C_{\text{info}} = \frac{\sum_i c_i I_i}{\sum_i I_i}
+  $$
+  
+This information view is used for two key behaviors:
+
+- **Type-ahead detection**: the last query term is treated as “still being typed” when its information share is small:
+
+  $$
+  \frac{I_{\text{last}}}{\sum_i I_i} \le \frac{1}{n+1}
+  $$
+
+  where $n$ is the number of unique query terms. Intuitively, the suffix is informationally weaker than an average term, so we avoid over-committing to it.
+
+- **Position-independent precedence boost**: when exactly one term is unmatched, we compare the **fraction of missing terms** ($1 - C_{\text{coord}}$) to the **fraction of missing information** (derived from $C_{\text{info}}$). If we have lost fewer bits of information than raw term coverage suggests, a precedence bit is set so that documents matching the rarer, more informative term outrank those matching only common terms.
+
+$$
+\text{termGap} = 1 - C_{\text{coord}}, \qquad
+R_{\text{miss}} = \frac{\sum_i (1 - c_i) I_i}{\sum_i I_i}
+$$
+
+If $R_{\text{miss}} < \text{termGap}$ (i.e. we have lost fewer bits of information than raw term coverage suggests), a precedence bit is set.
 
 **Stage 3: Lexicographic Score Fusion**
 
@@ -332,18 +366,19 @@ Documents are ranked by a **strict precedence order**—higher bits always domin
 
 The semantic component provides smooth differentiation within precedence tiers:
 
-**For single-term queries:**
+**For single-term queries**
 
-$$S_{\text{single}} = \frac{1}{2} \cdot C_{\text{avg}} + \frac{1}{2} \cdot L_{\text{lex}}$$
+For single-term queries Infidex uses a **heuristic blend** of:
 
-where $L_{\text{lex}}$ is the lexical similarity computed as:
+- Per-term coverage $C_{\text{avg}}$ (how completely the query token is matched), and
+- A lexical similarity score $L_{\text{lex}}$ that takes the maximum over several signals:
 
-$$L_{\text{lex}} = \max\left( L_{\text{substr}}, L_{\text{prefix}}, L_{\text{fuzzy}}, L_{\text{2seg}} \right)$$
+  - $L_{\text{substr}}$: substring containment (with a bias toward matches earlier in the query),
+  - $L_{\text{prefix}}$: overlap between query suffix and token prefix,
+  - $L_{\text{fuzzy}}$: Damerau–Levenshtein similarity (with transpositions),
+  - $L_{\text{2seg}}$: a simple two-segment check for concatenated queries.
 
-- $L_{\text{substr}}$: Substring containment score (position-weighted)
-- $L_{\text{prefix}}$: Longest prefix of doc token matching suffix of query
-- $L_{\text{fuzzy}}$: Damerau-Levenshtein similarity (transpositions allowed)
-- $L_{\text{2seg}}$: Two-segment alignment for concatenated queries
+The final single-term semantic score is just a convex combination of $C_{\text{avg}}$ and $L_{\text{lex}}$ chosen for practical behavior on real-world data.
 
 **For multi-term queries:**
 
@@ -353,7 +388,7 @@ where:
 - $C_{\text{avg}}$ = average per-term coverage
 - $T_{\text{tfidf}}$ = normalized TF-IDF score from Stage 1
 - $R_{\text{phrase}}$ = phrase run bonus (consecutive query terms in document order)
-- $\alpha + \beta + \gamma = 1$ (currently $\alpha = 0.4$, $\beta = 0.4$, $\gamma = 0.2$)
+- $\alpha + \beta + \gamma = 1$ ($\alpha$, $\beta$, $\gamma$ are adjustable constants)
 
 #### Two-Segment Alignment (Single-Term Queries)
 
@@ -496,7 +531,6 @@ var engine = new SearchEngine(
     textNormalizer: TextNormalizer.CreateDefault(),
     tokenizerSetup: TokenizerSetup.CreateDefault(),
     coverageSetup: CoverageSetup.CreateDefault(),
-    stopTermLimit: 1_250_000,             // Max terms before stop-word filtering
     wordMatcherSetup: new WordMatcherSetup
     {
         SupportLD1 = true,                 // Enable fuzzy matching
@@ -514,7 +548,7 @@ var engine = new SearchEngine(
 ## Testing
 
 Infidex ships with a comprehensive test suite of 400+ tests, including:
-- Query relevancy tests on morphologically diverse languages (currently English and Czech) without any dataset-specific tuning
+- Multilingual query relevancy tests
 - Concurrency tests exercising parallel search, indexing, and save/load patterns
 - Persistence, performance, and core API behavior tests
 

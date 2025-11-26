@@ -55,7 +55,7 @@ public class VectorModel
         char[] delimiters = tokenizer.TokenizerSetup?.Delimiters ?? [' '];
         _shortQueryIndex = new PositionalPrefixIndex(delimiters: delimiters);
     }
-    
+
     public Document IndexDocument(Document document)
     {
         Document doc = _documents.AddDocument(document);
@@ -111,33 +111,84 @@ public class VectorModel
         _docLengths = new float[totalDocs];
         _avgDocLength = 0f;
 
-        int termCount = 0;
         int totalTerms = _termCollection.Count;
-
-        foreach (Term term in _termCollection.GetAllTerms())
+        if (totalTerms == 0 || totalDocs == 0)
         {
-            if (++termCount % 10 == 0 && cancellationToken.IsCancellationRequested)
-                return;
+            ProgressChanged?.Invoke(this, 100);
+            return;
+        }
 
-            if (batchDelayMs >= 0 && batchSize > 0 && termCount % batchSize == 0)
-                Thread.Sleep(batchDelayMs);
+        int workerCount = Math.Max(1, Environment.ProcessorCount);
+        int chunkSize = (totalTerms + workerCount - 1) / workerCount;
 
-            List<int>? docIds = term.GetDocumentIds();
-            List<byte>? weights = term.GetWeights();
+        // Each worker gets its own local vector of document lengths to avoid contention.
+        float[][] localDocLengths = new float[workerCount][];
+        int processedTerms = 0;
 
-            if (docIds == null || weights == null)
-                continue;
-
-            int postings = docIds.Count;
-            for (int i = 0; i < postings; i++)
+        Parallel.For(0, workerCount, new ParallelOptions
+        {
+            MaxDegreeOfParallelism = workerCount,
+            CancellationToken = cancellationToken
+        }, workerIndex =>
+        {
+            int start = workerIndex * chunkSize;
+            int end = Math.Min(start + chunkSize, totalTerms);
+            if (start >= end)
             {
-                int internalId = docIds[i];
-                if ((uint)internalId < (uint)totalDocs)
-                    _docLengths[internalId] += weights[i];
+                localDocLengths[workerIndex] = new float[totalDocs];
+                return;
             }
 
-            if (termCount % 100 == 0)
-                ProgressChanged?.Invoke(this, termCount * 100 / Math.Max(totalTerms, 1));
+            float[] local = new float[totalDocs];
+
+            for (int termIndex = start; termIndex < end; termIndex++)
+            {
+                if (batchDelayMs >= 0 && batchSize > 0 &&
+                    processedTerms > 0 && processedTerms % batchSize == 0)
+                {
+                    Thread.Sleep(batchDelayMs);
+                }
+
+                Term? term = _termCollection.GetTermByIndex(termIndex);
+                if (term == null)
+                    continue;
+
+                List<int>? docIds = term.GetDocumentIds();
+                List<byte>? weights = term.GetWeights();
+
+                if (docIds == null || weights == null)
+                    continue;
+
+                int postings = docIds.Count;
+                for (int i = 0; i < postings; i++)
+                {
+                    int internalId = docIds[i];
+                    if ((uint)internalId < (uint)totalDocs)
+                        local[internalId] += weights[i];
+                }
+
+                int done = Interlocked.Increment(ref processedTerms);
+                if (done % 100 == 0)
+                {
+                    int percent = done * 100 / Math.Max(totalTerms, 1);
+                    ProgressChanged?.Invoke(this, percent);
+                }
+            }
+
+            localDocLengths[workerIndex] = local;
+        });
+
+        // Aggregate local vectors into the final document length array.
+        for (int d = 0; d < totalDocs; d++)
+        {
+            float sum = 0f;
+            for (int w = 0; w < workerCount; w++)
+            {
+                float[] local = localDocLengths[w];
+                if (local != null && d < local.Length)
+                    sum += local[d];
+            }
+            _docLengths[d] = sum;
         }
 
         float totalLength = 0f;
@@ -173,18 +224,28 @@ public class VectorModel
     /// </summary>
     public void BuildOptimizedIndexes()
     {
-        // Build FST
-        if (_fstBuilder != null)
+        // Build FST from the current term collection if it is not already available
+        // (e.g., after a load from persistence).
+        if (_fstIndex == null && _termCollection.Count > 0)
         {
-            _fstIndex = _fstBuilder.Build();
+            FstBuilder builder = new FstBuilder();
+            for (int i = 0; i < _termCollection.Count; i++)
+            {
+                Term? term = _termCollection.GetTermByIndex(i);
+                if (term?.Text != null)
+                {
+                    builder.Add(term.Text, i);
+                }
+            }
+
+            _fstIndex = builder.Build();
         }
         
-        // Finalize short query index
-        _shortQueryIndex?.Finalize();
-        
-        // Create short query resolver
+        // Finalize the short-query positional prefix index and create resolver.
         if (_shortQueryIndex != null)
         {
+            _shortQueryIndex.Finalize();
+            
             char[] delimiters = _tokenizer.TokenizerSetup?.Delimiters ?? [' '];
             _shortQueryResolver = new ShortQueryResolver(_shortQueryIndex, _documents, delimiters);
         }

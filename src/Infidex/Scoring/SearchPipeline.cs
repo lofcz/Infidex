@@ -40,6 +40,12 @@ internal sealed class SearchPipeline
         _coverageEngine = coverageEngine;
         _coverageSetup = coverageSetup;
         _wordMatcher = wordMatcher;
+        
+        // Wire corpus statistics into coverage engine for IDF computation
+        if (_coverageEngine != null)
+        {
+            _coverageEngine.SetCorpusStatistics(_vectorModel.TermCollection, _vectorModel.Documents.Count);
+        }
     }
 
     public ScoreEntry[] Execute(string searchText, CoverageSetup? coverageSetup, int coverageDepth, int maxResults = int.MaxValue)
@@ -420,7 +426,13 @@ internal sealed class SearchPipeline
         }
 
         CoverageFeatures features = _coverageEngine!.CalculateFeatures(searchText, docText, lcsFromSpan);
-        var (finalScore, tiebreaker) = FusionScorer.Calculate(searchText, docText, features, baseScore, minStemLength, delimiters);
+        var (finalScore, tiebreaker) = FusionScorer.Calculate(
+            searchText,
+            docText,
+            features,
+            baseScore,
+            minStemLength,
+            delimiters);
 
         if (docIndex < lcsAndWordHitsSpan.Height && lcsAndWordHitsSpan[1, docIndex] == 0)
             lcsAndWordHitsSpan[1, docIndex] = (byte)Math.Min(features.WordHits, 255);

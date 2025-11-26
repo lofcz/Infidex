@@ -4,6 +4,13 @@ namespace Infidex.Coverage;
 
 internal static class FuzzyWordMatcher
 {
+    // Default parameters for the probabilistic edit-distance model.
+    // These capture a "human-typo-ish" regime:
+    // - p: per-character error probability (~3–5%)
+    // - alpha: tail probability for edits beyond the allowed threshold
+    private const double DefaultErrorProbability = 0.04;
+    private const double DefaultTailProbability = 0.01;
+
     public static void Match(ref MatchState state, int minWordSize, int levenshteinMaxWordSize)
     {
         int qCount = state.QCount;
@@ -15,9 +22,24 @@ internal static class FuzzyWordMatcher
                 maxQueryLength = state.QueryTokens[i].Length;
         
         if (maxQueryLength == 0) return;
-        
-        double maxRelDist = 0.25;
-        int maxEditDist = Math.Max(1, (int)Math.Round(maxQueryLength * maxRelDist));
+
+        // Use a principled maximum edit distance based on a simple
+        // Binomial(L, p) error model instead of an uncalibrated
+        // relative distance knob.
+        //
+        // We choose the smallest d such that:
+        //   Pr[D ≤ d] ≥ 1 - alpha
+        //
+        // where D ~ Binomial(L, p), p ≈ DefaultErrorProbability and
+        // alpha ≈ DefaultTailProbability.
+        int maxEditDist = EditDistanceModel.GetMaxEditsForLength(
+            maxQueryLength,
+            DefaultErrorProbability,
+            DefaultTailProbability);
+
+        // Ensure we allow at least one edit for non-empty queries.
+        if (maxEditDist < 1)
+            maxEditDist = 1;
         
         for (int editDist = 1; editDist <= maxEditDist; editDist++)
         {
