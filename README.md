@@ -264,6 +264,18 @@ $$\text{BM25+}(q, d) = \sum_{t \in q} \text{IDF}(t) \cdot \left( \frac{f(t,d) \c
 - Ultra-fast with byte-quantized weights (4x memory savings)
 - Produces top-K candidates for Stage 2 refinement
 
+Formally, let $V$ be the set of all indexed terms over alphabet $\Sigma$. Infidex builds a deterministic finite-state transducer
+\[
+T = (Q, \Sigma, \delta, q_0, F, \mu)
+\]
+such that for each $t \in V$ there is a unique path from $q_0$ to some $q \in F$ labeled by $t$, and $\mu(t) \in \mathbb{N}$ is a term identifier.  
+Prefix and suffix queries are then evaluated as:
+\[
+ \text{Pref}(p) = \{\mu(t) : t \in V,\ t \text{ has prefix } p\}, \qquad
+ \text{Suff}(s) = \{\mu(t) : t \in V,\ t \text{ has suffix } s\},
+\]
+with time complexity $O(|p| + |\text{Pref}(p)|)$ and $O(|s| + |\text{Suff}(s)|)$, respectively.
+
 **Stage 2: Lexical Coverage Analysis**
 - Applied to top-K candidates from Stage 1
 - Tracks **per-term coverage** for each query word using 5 algorithms:
@@ -371,7 +383,6 @@ This ensures:
 1. **Completeness dominates** (all terms found beats partial matches)
 2. **Match quality refines** (whole words beat prefixes beat fuzzy)
 3. **Similarity differentiates** (smooth ordering within tiers)
-
 
 ## Persistence
 
