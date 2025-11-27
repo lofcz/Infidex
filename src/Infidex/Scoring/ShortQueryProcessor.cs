@@ -24,7 +24,7 @@ internal static class ShortQueryProcessor
     /// </summary>
     public static ScoreEntry[] SearchSingleCharacter(
         char ch,
-        Span2D<byte> bestSegments,
+        Dictionary<int, byte>? bestSegmentsMap,
         int queryIndex,
         int maxResults,
         IReadOnlyList<Document> documents,
@@ -132,21 +132,20 @@ internal static class ShortQueryProcessor
             ushort finalScore = (ushort)((precedence << 8) | baseScore);
             scores.Add(doc.DocumentKey, finalScore);
 
-            if (bestSegments.Height > 0 && bestSegments.Width > 0)
+            if (bestSegmentsMap != null)
             {
                 int internalId = doc.Id;
                 int segmentNumber = doc.SegmentNumber;
                 int baseId = internalId - segmentNumber;
 
-                if (baseId >= 0 && baseId < bestSegments.Height &&
-                    queryIndex >= 0 && queryIndex < bestSegments.Width)
+                if (baseId >= 0)
                 {
-                    bestSegments[baseId, queryIndex] = (byte)segmentNumber;
+                    bestSegmentsMap[baseId] = (byte)segmentNumber;
                 }
             }
         }
 
-        ScoreArray consolidated = SegmentProcessor.ConsolidateSegments(scores, bestSegments);
+        ScoreArray consolidated = SegmentProcessor.ConsolidateSegments(scores, bestSegmentsMap);
         ScoreEntry[] all = consolidated.GetAll();
 
         if (maxResults < int.MaxValue && all.Length > maxResults)
@@ -169,7 +168,7 @@ internal static class ShortQueryProcessor
         FstIndex? fstIndex,
         TermCollection termCollection,
         DocumentCollection documents,
-        Span2D<byte> bestSegments,
+        Dictionary<int, byte>? bestSegmentsMap,
         char[] delimiters,
         bool enableDebugLogging)
     {
@@ -218,7 +217,7 @@ internal static class ShortQueryProcessor
             foreach (Term term in matchingTerms)
             {
                 ProcessTermMatches(term, documents, docScores, matchedDocs,
-                    firstTokenPrefixDocs, searchLower, bestSegments, multiplier: 10);
+                    firstTokenPrefixDocs, searchLower, bestSegmentsMap, multiplier: 10);
             }
         }
 
@@ -226,7 +225,7 @@ internal static class ShortQueryProcessor
         if (matchedDocs.Count < 100)
         {
             ProcessFuzzyFallback(prefixPatterns, searchLower, termCollection, documents,
-                docScores, matchedDocs, firstTokenPrefixDocs, bestSegments);
+                docScores, matchedDocs, firstTokenPrefixDocs, bestSegmentsMap);
         }
 
         // Build final scores with precedence
@@ -264,7 +263,7 @@ internal static class ShortQueryProcessor
         HashSet<long> matchedDocs,
         HashSet<long> firstTokenPrefixDocs,
         string searchLower,
-        Span2D<byte> bestSegments,
+        Dictionary<int, byte>? bestSegmentsMap,
         int multiplier)
     {
         List<int>? docIds = term.GetDocumentIds();
@@ -302,12 +301,12 @@ internal static class ShortQueryProcessor
                 }
             }
 
-            if (bestSegments.Height > 0 && internalId < bestSegments.Height)
+            if (bestSegmentsMap != null)
             {
                 int baseId = internalId - doc.SegmentNumber;
-                if (baseId >= 0 && baseId < bestSegments.Height)
+                if (baseId >= 0)
                 {
-                    bestSegments[baseId, 0] = (byte)doc.SegmentNumber;
+                    bestSegmentsMap[baseId] = (byte)doc.SegmentNumber;
                 }
             }
         }
@@ -321,7 +320,7 @@ internal static class ShortQueryProcessor
         Dictionary<long, int> docScores,
         HashSet<long> matchedDocs,
         HashSet<long> firstTokenPrefixDocs,
-        Span2D<byte> bestSegments)
+        Dictionary<int, byte>? bestSegmentsMap)
     {
         foreach (Term term in termCollection.GetAllTerms())
         {
@@ -353,7 +352,7 @@ internal static class ShortQueryProcessor
             {
                 int multiplier = hasWordBoundaryMatch ? 2 : 1;
                 ProcessTermMatches(term, documents, docScores, matchedDocs,
-                    firstTokenPrefixDocs, searchLower, bestSegments, multiplier);
+                    firstTokenPrefixDocs, searchLower, bestSegmentsMap, multiplier);
             }
         }
     }

@@ -39,6 +39,32 @@ internal static class LexicalPrescreen
             }
         }
 
+        // Build union of all query term posting lists (documents containing ANY query token)
+        // This is the standard inverted index approach - one pass, no redundant work
+        HashSet<int> docsWithAnyTerm = [];
+        
+        foreach (string token in queryTokens)
+        {
+            if (token.Length == 0)
+                continue;
+
+            Term? term = termCollection.GetTerm(token);
+            List<int>? docIds = term?.GetDocumentIds();
+            if (docIds != null)
+            {
+                // Union: collect all docs containing this term
+                foreach (int docId in docIds)
+                {
+                    docsWithAnyTerm.Add(docId);
+                }
+            }
+        }
+
+        if (docsWithAnyTerm.Count == 0)
+            return candidates;
+
+        // Intersection: keep only candidates that contain at least one query term
+        // Single pass, O(1) hash lookup per candidate
         List<ScoreEntry> filtered = new List<ScoreEntry>(candidates.Length);
 
         foreach (ScoreEntry candidate in candidates)
@@ -47,27 +73,7 @@ internal static class LexicalPrescreen
             if (doc == null || doc.Deleted)
                 continue;
 
-            string text = doc.IndexedText;
-            if (tokenizer.TextNormalizer != null)
-            {
-                text = tokenizer.TextNormalizer.Normalize(text);
-            }
-
-            bool hasAnyToken = false;
-
-            foreach (string token in queryTokens)
-            {
-                if (token.Length == 0)
-                    continue;
-
-                if (text.IndexOf(token, StringComparison.OrdinalIgnoreCase) >= 0)
-                {
-                    hasAnyToken = true;
-                    break;
-                }
-            }
-
-            if (hasAnyToken)
+            if (docsWithAnyTerm.Contains(doc.Id))
             {
                 filtered.Add(candidate);
             }

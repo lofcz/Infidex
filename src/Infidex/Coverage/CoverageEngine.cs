@@ -13,6 +13,7 @@ public class CoverageEngine
     private TermCollection? _termCollection;
     private int _totalDocuments;
     private readonly ConcurrentDictionary<string, float[]> _queryIdfCache = new();
+    private DocumentMetadataCache? _documentMetadataCache;
     
     public CoverageEngine(Tokenizer tokenizer, CoverageSetup? setup = null)
     {
@@ -30,45 +31,29 @@ public class CoverageEngine
         _totalDocuments = totalDocuments;
     }
     
-    public byte CalculateCoverageScore(string query, string documentText, double lcsSum, out int wordHits)
+    /// <summary>
+    /// Sets the document metadata cache for fusion signal optimization.
+    /// Should be called once after indexing is complete.
+    /// </summary>
+    internal void SetDocumentMetadataCache(DocumentMetadataCache? metadataCache)
     {
-        CoverageResult result = CalculateCoverageInternal(query, documentText, lcsSum, out wordHits, 
+        _documentMetadataCache = metadataCache;
+    }
+    
+    public byte CalculateCoverageScore(string query, string documentText, double lcsSum, out int wordHits, int documentId = -1)
+    {
+        CoverageResult result = CalculateCoverageInternal(query, documentText, lcsSum, documentId, out wordHits, 
             out _, out _, out _, out _, out _, out _, out _, out _, out _, out _, out _);
         return result.CoverageScore;
     }
-    
-    public ushort CalculateRankedScore(string query, string documentText, double lcsSum, byte baseTfidfScore, out int wordHits)
-    {
-        CoverageResult result = CalculateCoverageInternal(query, documentText, lcsSum, out wordHits,
-            out int docTokenCount,
-            out int termsWithAnyMatch,
-            out int termsFullyMatched,
-            out int termsStrictMatched,
-            out int termsPrefixMatched,
-            out _,  // longestPrefixRun
-            out _,  // suffixPrefixRun
-            out _,  // phraseSpan
-            out _,  // precedingStrictCount
-            out _,  // lastTokenHasPrefix
-            out _); // fusionSignals
-        
-        return CoverageScorer.CalculateRankedScore(
-            result,
-            docTokenCount,
-            wordHits,
-            termsWithAnyMatch,
-            termsFullyMatched,
-            termsStrictMatched,
-            termsPrefixMatched,
-            baseTfidfScore);
-    }
 
-    public CoverageFeatures CalculateFeatures(string query, string documentText, double lcsSum)
+    public CoverageFeatures CalculateFeatures(string query, string documentText, double lcsSum, int documentId = -1)
     {
         CoverageResult result = CalculateCoverageInternal(
             query,
             documentText,
             lcsSum,
+            documentId,
             out int wordHits,
             out int docTokenCount,
             out int termsWithAnyMatch,
@@ -107,7 +92,7 @@ public class CoverageEngine
             fusionSignals);
     }
 
-    private CoverageResult CalculateCoverageInternal(string query, string documentText, double lcsSum, 
+    private CoverageResult CalculateCoverageInternal(string query, string documentText, double lcsSum, int documentId,
         out int wordHits,
         out int docTokenCount,
         out int termsWithAnyMatch,
@@ -344,6 +329,11 @@ public class CoverageEngine
 
         int fusionDCount = CoverageTokenizer.TokenizeToSpan(documentText, fusionDocTokens, minWordSize: 0, delimiters);
 
+        // Get precomputed document metadata for optimization
+        DocumentMetadata docMetadata = _documentMetadataCache != null && documentId >= 0
+            ? _documentMetadataCache.Get(documentId)
+            : DocumentMetadata.Empty;
+
         try
         {
             fusionSignals = FusionSignalComputer.ComputeSignals(
@@ -353,7 +343,8 @@ public class CoverageEngine
                 fusionDocTokens[..fusionDCount],
                 fusionQCount,
                 fusionDCount,
-                _setup.MinWordSize);
+                _setup.MinWordSize,
+                docMetadata);
         }
         finally
         {

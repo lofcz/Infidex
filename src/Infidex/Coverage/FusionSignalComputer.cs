@@ -54,7 +54,8 @@ internal static class FusionSignalComputer
         Span<StringSlice> docTokens,
         int qCount,
         int dCount,
-        int minStemLength)
+        int minStemLength,
+        DocumentMetadata docMetadata = default)
     {
         bool lexicalPrefixLast = false;
         bool allPrecedingExact = false;
@@ -81,20 +82,46 @@ internal static class FusionSignalComputer
             hasStemEvidence = CheckStemEvidence(querySpan, docSpan, queryTokens, docTokens, qCount, dCount, minStemLength);
         }
 
-        // 4. HasAnchorStem (for intent bonus)
+        // 4. HasAnchorStem (for intent bonus) - OPTIMIZED with precomputed metadata
         if (qCount > 0 && queryTokens[0].Length >= AnchorStemLength)
         {
             ReadOnlySpan<char> firstQueryToken = querySpan.Slice(queryTokens[0].Offset, queryTokens[0].Length);
             ReadOnlySpan<char> stem = firstQueryToken[..AnchorStemLength];
 
-            for (int i = 0; i < dCount; i++)
+            // Fast path: check if document's first token matches the query stem
+            if (docMetadata.HasTokens && docMetadata.FirstToken.Length >= stem.Length)
             {
-                ReadOnlySpan<char> docToken = docSpan.Slice(docTokens[i].Offset, docTokens[i].Length);
-                if (docToken.Length >= stem.Length &&
-                    docToken.StartsWith(stem, StringComparison.OrdinalIgnoreCase))
+                if (docMetadata.FirstToken.AsSpan().StartsWith(stem, StringComparison.OrdinalIgnoreCase))
                 {
                     hasAnchorStem = true;
-                    break;
+                }
+                else
+                {
+                    // Fallback: scan remaining document tokens
+                    for (int i = 1; i < dCount; i++)
+                    {
+                        ReadOnlySpan<char> docToken = docSpan.Slice(docTokens[i].Offset, docTokens[i].Length);
+                        if (docToken.Length >= stem.Length &&
+                            docToken.StartsWith(stem, StringComparison.OrdinalIgnoreCase))
+                        {
+                            hasAnchorStem = true;
+                            break;
+                        }
+                    }
+                }
+            }
+            else if (!docMetadata.HasTokens)
+            {
+                // No precomputed metadata available, use original logic
+                for (int i = 0; i < dCount; i++)
+                {
+                    ReadOnlySpan<char> docToken = docSpan.Slice(docTokens[i].Offset, docTokens[i].Length);
+                    if (docToken.Length >= stem.Length &&
+                        docToken.StartsWith(stem, StringComparison.OrdinalIgnoreCase))
+                    {
+                        hasAnchorStem = true;
+                        break;
+                    }
                 }
             }
         }
@@ -164,15 +191,9 @@ internal static class FusionSignalComputer
             return (false, false);
         }
 
-        // Build doc token set for multi-term case
-        HashSet<string> docTokenSet = new HashSet<string>(dCount, StringComparer.OrdinalIgnoreCase);
-        for (int i = 0; i < dCount; i++)
-        {
-            ReadOnlySpan<char> d = docSpan.Slice(docTokens[i].Offset, docTokens[i].Length);
-            if (d.Length > 0)
-                docTokenSet.Add(new string(d));
-        }
-
+        // Check if all preceding query tokens have exact matches in doc
+        // Use linear scan instead of HashSet - faster for small token counts (typically <10)
+        // and avoids allocation on every document during search
         bool allPrecedingExact = true;
         for (int i = 0; i < qCount - 1; i++)
         {
@@ -180,7 +201,18 @@ internal static class FusionSignalComputer
             if (q.Length == 0)
                 continue;
 
-            if (!docTokenSet.Contains(new string(q)))
+            bool foundExact = false;
+            for (int j = 0; j < dCount; j++)
+            {
+                ReadOnlySpan<char> d = docSpan.Slice(docTokens[j].Offset, docTokens[j].Length);
+                if (d.Equals(q, StringComparison.OrdinalIgnoreCase))
+                {
+                    foundExact = true;
+                    break;
+                }
+            }
+
+            if (!foundExact)
             {
                 allPrecedingExact = false;
                 break;
@@ -357,7 +389,7 @@ internal static class FusionSignalComputer
             int bestK = 0;
             for (int len = maxK; len >= 2; len--)
             {
-                if (qLower.Slice(qLen - len).Equals(tLower[..len], StringComparison.Ordinal))
+                if (qLower[(qLen - len)..].Equals(tLower[..len], StringComparison.Ordinal))
                 {
                     bestK = len;
                     break;

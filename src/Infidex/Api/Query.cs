@@ -34,7 +34,8 @@ public class Query
     public bool EnableBoost { get; set; }
     
     /// <summary>
-    /// Number of top TF-IDF candidates to pass to coverage engine
+    /// Number of top TF-IDF candidates to pass to coverage engine.
+    /// Default is 500. Decreasing this improves performance but may hurt recall for typo/fuzzy queries.
     /// </summary>
     public int CoverageDepth { get; set; } = 500;
     

@@ -3,6 +3,7 @@ using Infidex.Tokenization;
 using Infidex.Internalized.CommunityToolkit;
 using Infidex.Indexing.Fst;
 using Infidex.Indexing.ShortQuery;
+using Infidex.Coverage;
 
 namespace Infidex.Indexing;
 
@@ -27,6 +28,7 @@ public class VectorModel
     private FstBuilder? _fstBuilder;
     private PositionalPrefixIndex? _shortQueryIndex;
     private ShortQueryResolver? _shortQueryResolver;
+    private DocumentMetadataCache? _documentMetadataCache;
 
     public Tokenizer Tokenizer => _tokenizer;
     public DocumentCollection Documents => _documents;
@@ -36,6 +38,7 @@ public class VectorModel
     internal FstIndex? FstIndex => _fstIndex;
     internal PositionalPrefixIndex? ShortQueryIndex => _shortQueryIndex;
     internal ShortQueryResolver? ShortQueryResolver => _shortQueryResolver;
+    internal DocumentMetadataCache? DocumentMetadataCache => _documentMetadataCache;
 
     public event EventHandler<int>? ProgressChanged;
     public bool EnableDebugLogging { get; set; }
@@ -219,7 +222,7 @@ public class VectorModel
     }
     
     /// <summary>
-    /// Builds all optimized indexes (FST, short query).
+    /// Builds all optimized indexes (FST, short query, document metadata cache).
     /// Call after all documents have been indexed.
     /// </summary>
     public void BuildOptimizedIndexes()
@@ -249,6 +252,72 @@ public class VectorModel
             char[] delimiters = _tokenizer.TokenizerSetup?.Delimiters ?? [' '];
             _shortQueryResolver = new ShortQueryResolver(_shortQueryIndex, _documents, delimiters);
         }
+        
+        // Build document metadata cache for fusion signal optimization
+        BuildDocumentMetadataCache();
+    }
+    
+    /// <summary>
+    /// Builds the document metadata cache by tokenizing each document and extracting
+    /// first token and token count. This is done once at index time to avoid repeated
+    /// tokenization during scoring.
+    /// </summary>
+    private void BuildDocumentMetadataCache()
+    {
+        _documentMetadataCache = new DocumentMetadataCache(_documents.Count);
+        char[] delimiters = _tokenizer.TokenizerSetup?.Delimiters ?? [' '];
+        HashSet<char> delimiterSet = new HashSet<char>(delimiters);
+        
+        Parallel.For(0, _documents.Count, new ParallelOptions
+        {
+            MaxDegreeOfParallelism = Environment.ProcessorCount
+        }, docId =>
+        {
+            Document? doc = _documents.GetDocument(docId);
+            if (doc == null || doc.Deleted || string.IsNullOrEmpty(doc.IndexedText))
+            {
+                _documentMetadataCache.Set(docId, DocumentMetadata.Empty);
+                return;
+            }
+            
+            string text = doc.IndexedText.ToLowerInvariant();
+            ReadOnlySpan<char> textSpan = text.AsSpan();
+            
+            // Tokenize to find first token and count tokens
+            string firstToken = string.Empty;
+            ushort tokenCount = 0;
+            int i = 0;
+            
+            // Skip leading delimiters
+            while (i < textSpan.Length && delimiterSet.Contains(textSpan[i]))
+                i++;
+            
+            while (i < textSpan.Length && tokenCount < ushort.MaxValue)
+            {
+                // Find end of current token
+                int tokenStart = i;
+                while (i < textSpan.Length && !delimiterSet.Contains(textSpan[i]))
+                    i++;
+                
+                int tokenLength = i - tokenStart;
+                
+                if (tokenLength > 0)
+                {
+                    if (tokenCount == 0)
+                    {
+                        // Capture first token
+                        firstToken = textSpan.Slice(tokenStart, tokenLength).ToString();
+                    }
+                    tokenCount++;
+                }
+                
+                // Skip delimiters to next token
+                while (i < textSpan.Length && delimiterSet.Contains(textSpan[i]))
+                    i++;
+            }
+            
+            _documentMetadataCache.Set(docId, new DocumentMetadata(firstToken, tokenCount));
+        });
     }
     
     /// <summary>
@@ -268,10 +337,10 @@ public class VectorModel
         return _fstIndex?.HasPrefix(prefix.AsSpan()) ?? false;
     }
     
-    internal ScoreArray Search(string queryText, Span2D<byte> bestSegments = default, int queryIndex = 0)
-        => SearchWithMaxScore(queryText, int.MaxValue, bestSegments, queryIndex);
+    internal ScoreArray Search(string queryText, Dictionary<int, byte>? bestSegmentsMap = null, int queryIndex = 0)
+        => SearchWithMaxScore(queryText, int.MaxValue, bestSegmentsMap, queryIndex);
 
-    internal ScoreArray SearchWithMaxScore(string queryText, int topK, Span2D<byte> bestSegments = default, int queryIndex = 0)
+    internal ScoreArray SearchWithMaxScore(string queryText, int topK, Dictionary<int, byte>? bestSegmentsMap = null, int queryIndex = 0)
     {
         Shingle[] queryShingles = _tokenizer.TokenizeForSearch(queryText, out _, false);
 
@@ -293,7 +362,7 @@ public class VectorModel
         if (_docLengths == null || _docLengths.Length != totalDocs || _avgDocLength <= 0f)
             BuildInvertedLists(cancellationToken: CancellationToken.None);
 
-        return Bm25Scorer.Search(queryTerms, topK, totalDocs, _docLengths!, _avgDocLength, _stopTermLimit, _documents, bestSegments, queryIndex);
+        return Bm25Scorer.Search(queryTerms, topK, totalDocs, _docLengths!, _avgDocLength, _stopTermLimit, _documents, bestSegmentsMap, queryIndex, _shortQueryIndex, queryText);
     }
 
     public void Save(string filePath)
@@ -306,7 +375,7 @@ public class VectorModel
     public async Task SaveAsync(string filePath) => await Task.Run(() => Save(filePath));
 
     internal void SaveToStream(BinaryWriter writer)
-        => VectorModelPersistence.SaveToStream(writer, _documents, _termCollection, _fstIndex, _shortQueryIndex);
+        => VectorModelPersistence.SaveToStream(writer, _documents, _termCollection, _fstIndex, _shortQueryIndex, _documentMetadataCache);
 
     public static VectorModel Load(string filePath, Tokenizer tokenizer, int stopTermLimit = 1_250_000, float[]? fieldWeights = null)
     {
@@ -323,7 +392,7 @@ public class VectorModel
     internal void LoadFromStream(BinaryReader reader)
     {
         VectorModelPersistence.LoadFromStream(reader, _documents, _termCollection, _stopTermLimit, 
-            out _fstIndex, out _shortQueryIndex);
+            out _fstIndex, out _shortQueryIndex, out _documentMetadataCache);
         
         // Create resolver if short query index was loaded
         if (_shortQueryIndex != null)

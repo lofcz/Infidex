@@ -2,6 +2,7 @@ using Infidex.Api;
 using Infidex.Core;
 using Infidex.Indexing.Fst;
 using Infidex.Indexing.ShortQuery;
+using Infidex.Coverage;
 
 namespace Infidex.Indexing;
 
@@ -28,9 +29,10 @@ internal static class VectorModelPersistence
         DocumentCollection documents,
         TermCollection termCollection,
         FstIndex? fstIndex,
-        PositionalPrefixIndex? shortQueryIndex)
+        PositionalPrefixIndex? shortQueryIndex,
+        DocumentMetadataCache? documentMetadataCache = null)
     {
-        IndexPersistence.Save(writer, documents, termCollection, fstIndex, shortQueryIndex);
+        IndexPersistence.Save(writer, documents, termCollection, fstIndex, shortQueryIndex, documentMetadataCache);
     }
     
     /// <summary>
@@ -38,7 +40,7 @@ internal static class VectorModelPersistence
     /// </summary>
     public static void LoadFromStream(BinaryReader reader, DocumentCollection documents, TermCollection termCollection, int stopTermLimit)
     {
-        LoadFromStream(reader, documents, termCollection, stopTermLimit, out _, out _);
+        LoadFromStream(reader, documents, termCollection, stopTermLimit, out _, out _, out _);
     }
     
     /// <summary>
@@ -50,9 +52,10 @@ internal static class VectorModelPersistence
         TermCollection termCollection,
         int stopTermLimit,
         out FstIndex? fstIndex,
-        out PositionalPrefixIndex? shortQueryIndex)
+        out PositionalPrefixIndex? shortQueryIndex,
+        out DocumentMetadataCache? documentMetadataCache)
     {
-        IndexPersistence.Load(reader, documents, termCollection, stopTermLimit, out fstIndex, out shortQueryIndex);
+        IndexPersistence.Load(reader, documents, termCollection, stopTermLimit, out fstIndex, out shortQueryIndex, out documentMetadataCache);
     }
     
     /// <summary>
@@ -78,7 +81,8 @@ internal static class VectorModelPersistence
             DocumentCount = (int)docCount,
             TermCount = (int)termCount,
             HasFst = flags.HasFlag(IndexPersistence.IndexFlags.HasFst),
-            HasShortQueryIndex = flags.HasFlag(IndexPersistence.IndexFlags.HasShortQueryIndex)
+            HasShortQueryIndex = flags.HasFlag(IndexPersistence.IndexFlags.HasShortQueryIndex),
+            HasDocumentMetadataCache = flags.HasFlag(IndexPersistence.IndexFlags.HasDocumentMetadataCache)
         };
     }
 }
@@ -95,6 +99,7 @@ public sealed class IndexFormatInfo
     public int TermCount { get; set; }
     public bool HasFst { get; set; }
     public bool HasShortQueryIndex { get; set; }
+    public bool HasDocumentMetadataCache { get; set; }
     public string? ErrorMessage { get; set; }
     
     public override string ToString()

@@ -13,7 +13,7 @@ internal static class SegmentProcessor
     /// <summary>
     /// Consolidates segment scores to return only the best-scoring segment per DocumentKey.
     /// </summary>
-    public static ScoreArray ConsolidateSegments(ScoreArray scores, Span2D<byte> bestSegments)
+    public static ScoreArray ConsolidateSegments(ScoreArray scores, Dictionary<int, byte>? bestSegmentsMap)
     {
         ScoreArray consolidated = new ScoreArray();
         Dictionary<long, (ushort Score, byte Tiebreaker)> scoresByKey = new Dictionary<long, (ushort Score, byte Tiebreaker)>();
@@ -45,17 +45,17 @@ internal static class SegmentProcessor
     }
 
     /// <summary>
-    /// Returns the best segment text for a document using the bestSegments span.
+    /// Returns the best segment text for a document using the bestSegments map.
     /// </summary>
     public static string GetBestSegmentText(
         Document doc,
-        Span2D<byte> bestSegments,
+        Dictionary<int, byte>? bestSegmentsMap,
         DocumentCollection documents,
         TextNormalizer? textNormalizer)
     {
         string docText = doc.IndexedText;
 
-        if (bestSegments.Height > 0 && bestSegments.Width > 0)
+        if (bestSegmentsMap != null && bestSegmentsMap.Count > 0)
         {
             List<Document> allSegments = documents.GetDocumentsForPublicKey(doc.DocumentKey);
             if (allSegments.Count > 0)
@@ -63,9 +63,8 @@ internal static class SegmentProcessor
                 Document firstSeg = allSegments[0];
                 int baseId = firstSeg.Id - firstSeg.SegmentNumber;
 
-                if (baseId >= 0 && baseId < bestSegments.Height)
+                if (bestSegmentsMap.TryGetValue(baseId, out byte bestSegmentNum))
                 {
-                    byte bestSegmentNum = bestSegments[baseId, 0];
                     Document? bestSegmentDoc = documents.GetDocumentOfSegment(doc.DocumentKey, bestSegmentNum);
                     if (bestSegmentDoc != null)
                     {

@@ -2,6 +2,7 @@ using Infidex.Api;
 using Infidex.Core;
 using Infidex.Indexing.Fst;
 using Infidex.Indexing.ShortQuery;
+using Infidex.Coverage;
 
 namespace Infidex.Indexing;
 
@@ -23,6 +24,7 @@ internal static class IndexPersistence
         HasShortQueryIndex = 1 << 1,
         HasWordMatcher = 1 << 2,
         Compressed = 1 << 3, // Reserved for future
+        HasDocumentMetadataCache = 1 << 4,
     }
     
     /// <summary>
@@ -33,7 +35,8 @@ internal static class IndexPersistence
         DocumentCollection documents,
         TermCollection terms,
         FstIndex? fstIndex = null,
-        PositionalPrefixIndex? shortQueryIndex = null)
+        PositionalPrefixIndex? shortQueryIndex = null,
+        DocumentMetadataCache? documentMetadataCache = null)
     {
         using MemoryStream dataStream = new();
         using BinaryWriter dataWriter = new(dataStream);
@@ -42,6 +45,7 @@ internal static class IndexPersistence
         IndexFlags flags = IndexFlags.None;
         if (fstIndex != null) flags |= IndexFlags.HasFst;
         if (shortQueryIndex != null) flags |= IndexFlags.HasShortQueryIndex;
+        if (documentMetadataCache != null) flags |= IndexFlags.HasDocumentMetadataCache;
         
         // Write header
         writer.Write(MAGIC);
@@ -79,6 +83,12 @@ internal static class IndexPersistence
             shortQueryIndex.Write(dataWriter);
         }
         
+        // Write document metadata cache (if present)
+        if (documentMetadataCache != null)
+        {
+            documentMetadataCache.Write(dataWriter);
+        }
+        
         // Write data to main stream with explicit length prefix so that callers
         // can append additional sections (e.g., WordMatcher) after the index blob.
         byte[] data = dataStream.ToArray();
@@ -99,10 +109,12 @@ internal static class IndexPersistence
         TermCollection terms,
         int stopTermLimit,
         out FstIndex? fstIndex,
-        out PositionalPrefixIndex? shortQueryIndex)
+        out PositionalPrefixIndex? shortQueryIndex,
+        out DocumentMetadataCache? documentMetadataCache)
     {
         fstIndex = null;
         shortQueryIndex = null;
+        documentMetadataCache = null;
         
         // Read and verify magic
         byte[] magic = reader.ReadBytes(6);
@@ -179,6 +191,13 @@ internal static class IndexPersistence
         {
             shortQueryIndex = new PositionalPrefixIndex();
             shortQueryIndex.Read(dataReader);
+        }
+        
+        // Read document metadata cache if present
+        if (flags.HasFlag(IndexFlags.HasDocumentMetadataCache))
+        {
+            documentMetadataCache = new DocumentMetadataCache();
+            documentMetadataCache.Read(dataReader);
         }
     }
     
