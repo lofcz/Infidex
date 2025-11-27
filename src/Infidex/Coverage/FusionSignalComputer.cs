@@ -67,7 +67,8 @@ internal static class FusionSignalComputer
 
         if (qCount == 0 || dCount == 0)
         {
-            return new FusionSignals(qCount, lexicalPrefixLast, allPrecedingExact, isPerfectDocLexical, hasStemEvidence, hasAnchorStem, trailingMatchDensity, singleTermLexicalSim);
+            return new FusionSignals(qCount, lexicalPrefixLast, allPrecedingExact, isPerfectDocLexical,
+                hasStemEvidence, hasAnchorStem, trailingMatchDensity, singleTermLexicalSim);
         }
 
         // 1. CheckPrefixLastMatch
@@ -153,7 +154,7 @@ internal static class FusionSignalComputer
                 }
             }
         }
-
+        
         // 6. SingleTermLexicalSim (for single-term queries)
         if (qCount == 1)
         {
@@ -162,7 +163,8 @@ internal static class FusionSignalComputer
             singleTermLexicalSim = (byte)Math.Clamp(sim * 255f, 0f, 255f);
         }
 
-        return new FusionSignals(qCount, lexicalPrefixLast, allPrecedingExact, isPerfectDocLexical, hasStemEvidence, hasAnchorStem, trailingMatchDensity, singleTermLexicalSim);
+        return new FusionSignals(qCount, lexicalPrefixLast, allPrecedingExact, isPerfectDocLexical,
+            hasStemEvidence, hasAnchorStem, trailingMatchDensity, singleTermLexicalSim);
     }
 
     private static (bool isPrefixLastMatch, bool allPrecedingExact) CheckPrefixLastMatch(

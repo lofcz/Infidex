@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.Text.Json;
 using Infidex.Core;
 using Infidex.Api;
+using Infidex.Synonyms;
 
 namespace Infidex.Example;
 
@@ -40,9 +41,25 @@ public class SchoolExample
             .ToList();
 
         Console.WriteLine($"Loaded {schoolNames.Count} schools.");
+        
+        var synonymMap = new SynonymMap();
+        synonymMap.AddSynonym("zs", "zakladni");
+        synonymMap.AddSynonym("ss", "stredni");
+        synonymMap.AddSynonym("gympl", "gymnazium");
 
-        // Create Search Engine
-        var engine = SearchEngine.CreateDefault();
+        var config = ConfigurationParameters.GetConfig(400);
+        var engine = new SearchEngine(
+            indexSizes: config.IndexSizes,
+            startPadSize: config.StartPadSize,
+            stopPadSize: config.StopPadSize,
+            enableCoverage: true,
+            textNormalizer: config.TextNormalizer,
+            tokenizerSetup: config.TokenizerSetup,
+            coverageSetup: null,
+            stopTermLimit: config.StopTermLimit,
+            wordMatcherSetup: config.WordMatcherSetup,
+            fieldWeights: config.FieldWeights,
+            synonymMap: synonymMap);
         
         Console.WriteLine("Indexing schools...");
         var documents = schoolNames

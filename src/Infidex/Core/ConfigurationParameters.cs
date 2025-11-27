@@ -53,26 +53,7 @@ public class ConfigurationParameters
     
     private static void SetupPredefinedConfigs()
     {
-        Dictionary<char, char> charReplacements = new Dictionary<char, char>
-        {
-            { 'Æ', 'E' }, { 'æ', 'e' },
-            { 'Ø', 'O' }, { 'ø', 'o' },
-            { 'Å', 'A' }, { 'å', 'a' },
-            { 'Ä', 'A' }, { 'ä', 'a' },
-            { 'Ö', 'O' }, { 'ö', 'o' },
-            { 'Ü', 'U' }, { 'ü', 'u' },
-            { 'ß', 's' }
-        };
-        
-        Dictionary<string, string> stringReplacements = new Dictionary<string, string>
-        {
-            { "  ", " " },
-            { "\t", " " },
-            { "\n", " " },
-            { "\r", " " }
-        };
-        
-        TextNormalizer textNormalizer = new TextNormalizer(stringReplacements, charReplacements, oneWayMode: true);
+        TextNormalizer textNormalizer = TextNormalizer.CreateDefault();
         
         char[] delimiters =
         [

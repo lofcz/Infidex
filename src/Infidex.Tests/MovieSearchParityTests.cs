@@ -916,6 +916,49 @@ public abstract class MovieSearchParityTestsBase
     }
 
     [TestMethod]
+    public void TheMatrx_Typo_PrefersTheMatrixOverTheMatch()
+    {
+        var engine = GetEngine();
+
+        // "the matrx" should match "The Matrix" with LD=1 (i->x substitution)
+        // "The Match" has LD=2 from "the matrx" (substitute 'a' and 'r', delete 'x')
+        // All "The Matrix" movies (original + sequels) should rank above "The Match"
+        var result = engine.Search(new Query("the matrx", 10));
+        var records = result.Records;
+
+        Assert.IsTrue(records.Length > 0, "Should find results for 'the matrx'");
+
+        Console.WriteLine("Results for 'the matrx':");
+        for (int i = 0; i < Math.Min(10, records.Length); i++)
+        {
+            var doc = engine.GetDocument(records[i].DocumentId);
+            Console.WriteLine($"  [{records[i].Score}] {doc!.IndexedText}");
+        }
+
+        var topDoc = engine.GetDocument(records[0].DocumentId);
+        Assert.IsNotNull(topDoc);
+        
+        // Top result must be a Matrix movie (not "The Match")
+        Assert.IsTrue(topDoc!.IndexedText.Contains("Matrix", StringComparison.OrdinalIgnoreCase),
+            $"Query 'the matrx' should prefer 'The Matrix' (LD=1) over 'The Match' (LD=2), but got: {topDoc.IndexedText}");
+        
+        // Find positions of "The Matrix" (original) and "The Match"
+        int matrixIdx = -1;
+        int matchIdx = -1;
+        for (int i = 0; i < records.Length; i++)
+        {
+            var doc = engine.GetDocument(records[i].DocumentId);
+            if (doc!.IndexedText == "The Matrix") matrixIdx = i;
+            if (doc!.IndexedText == "The Match") matchIdx = i;
+        }
+        
+        Assert.IsTrue(matrixIdx >= 0, "Should find 'The Matrix' in results");
+        Assert.IsTrue(matchIdx >= 0, "Should find 'The Match' in results");
+        Assert.IsTrue(matrixIdx < matchIdx, 
+            $"'The Matrix' (LD=1) at position {matrixIdx} should rank above 'The Match' (LD=2) at position {matchIdx}");
+    }
+
+    [TestMethod]
     public void TeMatri_PrefersTheMatrixOverMatriarch()
     {
         var engine = GetEngine();

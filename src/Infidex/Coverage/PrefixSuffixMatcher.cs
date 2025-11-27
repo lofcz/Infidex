@@ -163,12 +163,13 @@ internal static class PrefixSuffixMatcher
                 double matchScore = 0;
                 
                 int qLen = qSlice.Length;
-                int maxEdits = 1;
+                const int maxEdits = 1;
                 
                 int dist = LevenshteinDistance.CalculateDamerau(qText, dText[..qLen], maxEdits, true);
                 if (dist <= maxEdits)
                 {
-                    matchScore = (qLen - dist) * 0.5;
+                    // Use full match score for low-edit-distance prefix matches.
+                    matchScore = qLen - dist;
                     if (matchScore < 0.1) matchScore = 0.1;
                     isMatch = true;
                 }
@@ -177,7 +178,7 @@ internal static class PrefixSuffixMatcher
                     dist = LevenshteinDistance.CalculateDamerau(qText, dText[..(qLen + 1)], maxEdits, true);
                     if (dist <= maxEdits)
                     {
-                        matchScore = (qLen - dist) * 0.5;
+                        matchScore = qLen - dist;
                         if (matchScore < 0.1) matchScore = 0.1;
                         isMatch = true;
                     }
@@ -186,7 +187,7 @@ internal static class PrefixSuffixMatcher
                         dist = LevenshteinDistance.CalculateDamerau(qText, dText[..(qLen - 1)], maxEdits, true);
                         if (dist <= maxEdits)
                         {
-                            matchScore = ((qLen - 1) - dist) * 0.5;
+                            matchScore = qLen - 1 - dist;
                             if (matchScore < 0.1) matchScore = 0.1;
                             isMatch = true;
                         }

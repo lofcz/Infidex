@@ -14,6 +14,7 @@ public class CoverageEngine
     private int _totalDocuments;
     private readonly ConcurrentDictionary<string, float[]> _queryIdfCache = new();
     private DocumentMetadataCache? _documentMetadataCache;
+    private Dictionary<string, float>? _wordIdfCache;
     
     public CoverageEngine(Tokenizer tokenizer, CoverageSetup? setup = null)
     {
@@ -38,6 +39,15 @@ public class CoverageEngine
     internal void SetDocumentMetadataCache(DocumentMetadataCache? metadataCache)
     {
         _documentMetadataCache = metadataCache;
+    }
+    
+    /// <summary>
+    /// Sets the word-level IDF cache for token-level discriminative power.
+    /// Should be called once after indexing is complete.
+    /// </summary>
+    internal void SetWordIdfCache(Dictionary<string, float>? wordIdfCache)
+    {
+        _wordIdfCache = wordIdfCache;
     }
     
     public byte CalculateCoverageScore(string query, string documentText, double lcsSum, out int wordHits, int documentId = -1)
@@ -89,6 +99,8 @@ public class CoverageEngine
             result.IdfCoverage,
             result.TotalIdf,
             result.MissingIdf,
+            result.TermIdf,
+            result.TermCi,
             fusionSignals);
     }
 
@@ -297,11 +309,25 @@ public class CoverageEngine
 
         wordHits = state.WordHits;
 
+        // Compute per-token word-level IDF if cache is available
+        float[]? wordLevelIdfArray = null;
+        if (_wordIdfCache != null && qCount > 0)
+        {
+            wordLevelIdfArray = new float[qCount];
+            for (int i = 0; i < qCount; i++)
+            {
+                StringSlice tokenSlice = queryTokens[i];
+                string token = query.Substring(tokenSlice.Offset, tokenSlice.Length);
+                wordLevelIdfArray[i] = _wordIdfCache.TryGetValue(token, out float idf) ? idf : 0f;
+            }
+        }
+        
         CoverageResult coverageResult = CoverageScorer.CalculateFinalScore(
             ref state,
             queryLen,
             lcsSum,
             _setup.CoverWholeQuery,
+            wordLevelIdfArray,
             out termsWithAnyMatch,
             out termsFullyMatched,
             out termsStrictMatched,

@@ -4,6 +4,7 @@ using Infidex.Internalized.CommunityToolkit;
 using Infidex.Indexing.Fst;
 using Infidex.Indexing.ShortQuery;
 using Infidex.Coverage;
+using Infidex.Synonyms;
 
 namespace Infidex.Indexing;
 
@@ -19,9 +20,13 @@ public class VectorModel
     private readonly DocumentCollection _documents;
     private readonly int _stopTermLimit;
     private readonly float[] _fieldWeights;
+    private readonly SynonymMap? _synonymMap;
 
     private float[]? _docLengths;
     private float _avgDocLength;
+    private bool _impactOrderingApplied;
+    private int[]? _oldToNewDocId;
+    private int[]? _newToOldDocId;
     
     // FST-based indexes
     private FstIndex? _fstIndex;
@@ -29,6 +34,11 @@ public class VectorModel
     private PositionalPrefixIndex? _shortQueryIndex;
     private ShortQueryResolver? _shortQueryResolver;
     private DocumentMetadataCache? _documentMetadataCache;
+    
+    // Word-level IDF cache: maps normalized word tokens to their IDF values.
+    // Built once during indexing to provide clean, token-level discriminative
+    // power measurements for coverage scoring without n-gram approximation.
+    private Dictionary<string, float>? _wordIdfCache;
 
     public Tokenizer Tokenizer => _tokenizer;
     public DocumentCollection Documents => _documents;
@@ -39,17 +49,19 @@ public class VectorModel
     internal PositionalPrefixIndex? ShortQueryIndex => _shortQueryIndex;
     internal ShortQueryResolver? ShortQueryResolver => _shortQueryResolver;
     internal DocumentMetadataCache? DocumentMetadataCache => _documentMetadataCache;
+    internal Dictionary<string, float>? WordIdfCache => _wordIdfCache;
 
     public event EventHandler<int>? ProgressChanged;
     public bool EnableDebugLogging { get; set; }
 
-    public VectorModel(Tokenizer tokenizer, int stopTermLimit = 1_250_000, float[]? fieldWeights = null)
+    public VectorModel(Tokenizer tokenizer, int stopTermLimit = 1_250_000, float[]? fieldWeights = null, SynonymMap? synonymMap = null)
     {
         _tokenizer = tokenizer;
         _stopTermLimit = stopTermLimit;
         _termCollection = new TermCollection();
         _documents = new DocumentCollection();
         _fieldWeights = fieldWeights ?? ConfigurationParameters.DefaultFieldWeights;
+        _synonymMap = synonymMap;
         
         // Initialize FST builder
         _fstBuilder = new FstBuilder();
@@ -66,10 +78,27 @@ public class VectorModel
 
         (ushort Position, byte WeightIndex)[] fieldBoundaries =
             document.Fields.GetSearchableTexts('§', out string concatenatedText);
+
+        // Preserve the original concatenated text (including casing and formatting)
+        // for external consumption and parity tests.
         doc.IndexedText = concatenatedText;
 
-        string text = concatenatedText.ToLowerInvariant();
-        List<Shingle> shingles = _tokenizer.TokenizeForIndexing(text, isSegmentContinuation);
+        // Internal indexing text is normalized, lowercased and optionally
+        // canonicalized for synonym equivalence. This text is used only for
+        // n-gram indexing and short-query structures, not for user-visible fields.
+        string indexText = concatenatedText;
+        if (_tokenizer.TextNormalizer != null)
+        {
+            indexText = _tokenizer.TextNormalizer.Normalize(indexText);
+        }
+        indexText = indexText.ToLowerInvariant();
+
+        if (_synonymMap != null && _synonymMap.HasCanonicalMappings && _tokenizer.TokenizerSetup != null)
+        {
+            indexText = _synonymMap.CanonicalizeText(indexText, _tokenizer.TokenizerSetup.Delimiters);
+        }
+
+        List<Shingle> shingles = _tokenizer.TokenizeForIndexing(indexText, isSegmentContinuation);
 
         foreach (Shingle shingle in shingles)
         {
@@ -85,8 +114,8 @@ public class VectorModel
             term.FirstCycleAdd(doc.Id, _stopTermLimit, removeDuplicates: isSegmentContinuation, fieldWeight);
         }
         
-        // Index for short query resolution
-        _shortQueryIndex?.IndexDocument(text, doc.Id);
+        // Index for short query resolution (also using canonicalized text)
+        _shortQueryIndex?.IndexDocument(indexText, doc.Id);
 
         return doc;
     }
@@ -199,6 +228,10 @@ public class VectorModel
             totalLength += _docLengths[i];
 
         _avgDocLength = totalDocs > 0 ? totalLength / totalDocs : 0f;
+        
+        // Build word-level IDF cache for clean discriminative power measurements
+        BuildWordIdfCache();
+        
         ProgressChanged?.Invoke(this, 100);
     }
 
@@ -280,8 +313,22 @@ public class VectorModel
                 return;
             }
             
+            // Use the same normalization pipeline as search: lowercase, optional
+            // text normalization, and synonym canonicalization when configured.
             string text = doc.IndexedText.ToLowerInvariant();
             ReadOnlySpan<char> textSpan = text.AsSpan();
+
+            if (_tokenizer.TextNormalizer != null)
+            {
+                text = _tokenizer.TextNormalizer.Normalize(text);
+                textSpan = text.AsSpan();
+            }
+
+            if (_synonymMap != null && _synonymMap.HasCanonicalMappings)
+            {
+                text = _synonymMap.CanonicalizeText(text, delimiters);
+                textSpan = text.AsSpan();
+            }
             
             // Tokenize to find first token and count tokens
             string firstToken = string.Empty;
@@ -399,6 +446,62 @@ public class VectorModel
         {
             char[] delimiters = _tokenizer.TokenizerSetup?.Delimiters ?? [' '];
             _shortQueryResolver = new ShortQueryResolver(_shortQueryIndex, _documents, delimiters);
+        }
+        
+    }
+    
+    /// <summary>
+    /// Builds a word-level IDF cache by tokenizing all documents and computing
+    /// document frequency per word token. This provides clean, token-level
+    /// discriminative power for coverage scoring without n-gram approximations.
+    /// </summary>
+    private void BuildWordIdfCache()
+    {
+        int totalDocs = _documents.Count;
+        if (totalDocs == 0)
+        {
+            _wordIdfCache = new Dictionary<string, float>();
+            return;
+        }
+        
+        char[] delimiters = _tokenizer.TokenizerSetup?.Delimiters ?? [' '];
+        
+        // Count document frequency for each word
+        Dictionary<string, int> wordDocFreq = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+        
+        for (int docId = 0; docId < totalDocs; docId++)
+        {
+            Document? doc = _documents.GetDocument(docId);
+            if (doc == null || doc.Deleted || string.IsNullOrEmpty(doc.IndexedText))
+                continue;
+            
+            // Tokenize and normalize (same as coverage will do at query time)
+            string normalized = doc.IndexedText.ToLowerInvariant();
+            if (_tokenizer.TextNormalizer != null)
+            {
+                normalized = _tokenizer.TextNormalizer.Normalize(normalized);
+            }
+            
+            string[] words = normalized.Split(delimiters, StringSplitOptions.RemoveEmptyEntries);
+            HashSet<string> uniqueWords = new HashSet<string>(words, StringComparer.OrdinalIgnoreCase);
+            
+            foreach (string word in uniqueWords)
+            {
+                if (word.Length > 0)
+                {
+                    wordDocFreq[word] = wordDocFreq.GetValueOrDefault(word, 0) + 1;
+                }
+            }
+        }
+        
+        // Compute IDF for each word
+        _wordIdfCache = new Dictionary<string, float>(wordDocFreq.Count, StringComparer.OrdinalIgnoreCase);
+        foreach (var (word, df) in wordDocFreq)
+        {
+            if (df > 0 && df <= totalDocs)
+            {
+                _wordIdfCache[word] = Bm25Scorer.ComputeIdf(totalDocs, df);
+            }
         }
     }
 }

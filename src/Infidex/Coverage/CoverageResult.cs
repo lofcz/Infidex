@@ -10,7 +10,9 @@ internal readonly struct CoverageResult(
     bool lastTermIsTypeAhead = false,
     float idfCoverage = 0f,
     float totalIdf = 0f,
-    float missingIdf = 0f)
+    float missingIdf = 0f,
+    float[]? termIdf = null,
+    float[]? termCi = null)
 {
     public readonly byte CoverageScore = coverageScore;
     public readonly int TermsCount = termsCount;
@@ -22,4 +24,6 @@ internal readonly struct CoverageResult(
     public readonly float IdfCoverage = idfCoverage;        // Information-weighted coverage
     public readonly float TotalIdf = totalIdf;              // Total information in query
     public readonly float MissingIdf = missingIdf;          // Information mass of unmatched terms
+    public readonly float[]? TermIdf = termIdf;             // Per-token IDF array (clean word-level)
+    public readonly float[]? TermCi = termCi;               // Per-token coverage (Ci) array
 }

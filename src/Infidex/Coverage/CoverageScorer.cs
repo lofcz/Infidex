@@ -7,6 +7,7 @@ internal static class CoverageScorer
         int queryLen,
         double lcsSum,
         bool coverWholeQuery,
+        float[]? wordLevelTermIdf,
         out int termsWithAnyMatch,
         out int termsFullyMatched,
         out int termsStrictMatched,
@@ -48,6 +49,9 @@ internal static class CoverageScorer
         int firstMatchIndex = -1;
         int minPos = int.MaxValue;
         int maxPos = -1;
+        
+        // Build per-term Ci array if word-level IDF is available
+        float[]? termCiArray = wordLevelTermIdf != null && qCount > 0 ? new float[qCount] : null;
 
         for (int i = 0; i < qCount; i++)
         {
@@ -55,6 +59,12 @@ internal static class CoverageScorer
             
             float ci = Math.Min(1.0f, state.TermMatchedChars[i] / state.TermMaxChars[i]);
             sumCi += ci;
+            
+            // Store per-term Ci for discriminative power calculation
+            if (termCiArray != null)
+            {
+                termCiArray[i] = ci;
+            }
             if (ci > 0) termsWithAnyMatch++;
             
             totalTermChars += state.TermMaxChars[i];
@@ -184,7 +194,7 @@ internal static class CoverageScorer
             }
         }
         
-        return new CoverageResult(coverageScore, qCount, firstMatchIndex, sumCi, lastTermCi, normalizedWeightedCoverage, lastTermIsTypeAhead, idfCoverage, totalIdf, missingIdf);
+        return new CoverageResult(coverageScore, qCount, firstMatchIndex, sumCi, lastTermCi, normalizedWeightedCoverage, lastTermIsTypeAhead, idfCoverage, totalIdf, missingIdf, wordLevelTermIdf, termCiArray);
     }
 
     public static ushort CalculateRankedScore(

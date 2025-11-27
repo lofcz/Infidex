@@ -24,6 +24,14 @@ public readonly struct CoverageFeatures
     public readonly float TotalIdf;         // Total information content of query
     public readonly float MissingIdf;       // Information content of unmatched terms
     
+    // Per-token IDF array: clean word-level discriminative power for each query token.
+    // Indexed by token position (0 to TermsCount-1). NULL if word-level IDF cache unavailable.
+    public readonly float[]? TermIdf;
+    
+    // Per-token coverage (Ci) array: character coverage ratio for each query token.
+    // Indexed by token position (0 to TermsCount-1). NULL if not computed.
+    public readonly float[]? TermCi;
+    
     // Precomputed fusion signals (Lucene-style: no string ops in fusion layer)
     public readonly FusionSignals FusionSignals;
 
@@ -49,6 +57,8 @@ public readonly struct CoverageFeatures
         float idfCoverage = 0f,
         float totalIdf = 0f,
         float missingIdf = 0f,
+        float[]? termIdf = null,
+        float[]? termCi = null,
         FusionSignals fusionSignals = default)
     {
         CoverageScore = coverageScore;
@@ -72,6 +82,8 @@ public readonly struct CoverageFeatures
         IdfCoverage = idfCoverage;
         TotalIdf = totalIdf;
         MissingIdf = missingIdf;
+        TermIdf = termIdf;
+        TermCi = termCi;
         FusionSignals = fusionSignals;
     }
 }

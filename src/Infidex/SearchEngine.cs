@@ -5,6 +5,7 @@ using Infidex.Indexing;
 using Infidex.Tokenization;
 using Infidex.Filtering;
 using Infidex.Scoring;
+using Infidex.Synonyms;
 using System.Collections.Concurrent;
 
 namespace Infidex;
@@ -22,6 +23,7 @@ public class SearchEngine : IDisposable
     private readonly CoverageSetup? _coverageSetup;
     private readonly WordMatcher.WordMatcher? _wordMatcher;
     private readonly SearchPipeline _searchPipeline;
+    private readonly SynonymMap? _synonymMap;
     private bool _isIndexed;
     private DocumentFields? _documentFieldSchema;
 
@@ -31,14 +33,13 @@ public class SearchEngine : IDisposable
     private readonly ReaderWriterLockSlim _rwLock = new ReaderWriterLockSlim();
     private volatile SearchEngineStatus _status = SearchEngineStatus.Ready;
 
-    public bool EnableDebugLogging
-    {
-        get => _searchPipeline.EnableDebugLogging;
-        set => _searchPipeline.EnableDebugLogging = value;
-    }
-
     public event EventHandler<int>? ProgressChanged;
     public SearchEngineStatus Status { get => _status; private set => _status = value; }
+    
+    /// <summary>
+    /// Gets the synonym map for this search engine. Null if synonyms are not enabled.
+    /// </summary>
+    public SynonymMap? SynonymMap => _synonymMap;
 
     public SearchEngine(
         int[] indexSizes,
@@ -50,13 +51,14 @@ public class SearchEngine : IDisposable
         CoverageSetup? coverageSetup = null,
         int stopTermLimit = 1_250_000,
         WordMatcherSetup? wordMatcherSetup = null,
-        float[]? fieldWeights = null)
+        float[]? fieldWeights = null,
+        SynonymMap? synonymMap = null)
     {
         textNormalizer ??= TextNormalizer.CreateDefault();
         tokenizerSetup ??= TokenizerSetup.CreateDefault();
 
         Tokenizer tokenizer = new Tokenizer(indexSizes, startPadSize, stopPadSize, textNormalizer, tokenizerSetup);
-        _vectorModel = new VectorModel(tokenizer, stopTermLimit, fieldWeights);
+        _vectorModel = new VectorModel(tokenizer, stopTermLimit, fieldWeights, synonymMap);
         _vectorModel.ProgressChanged += (s, p) => ProgressChanged?.Invoke(this, 50 + p / 2);
 
         if (enableCoverage)
@@ -68,7 +70,8 @@ public class SearchEngine : IDisposable
         if (wordMatcherSetup != null && tokenizerSetup != null)
             _wordMatcher = new WordMatcher.WordMatcher(wordMatcherSetup, tokenizerSetup.Delimiters, textNormalizer);
 
-        _searchPipeline = new SearchPipeline(_vectorModel, _coverageEngine, _coverageSetup, _wordMatcher);
+        _synonymMap = synonymMap;
+        _searchPipeline = new SearchPipeline(_vectorModel, _coverageEngine, _coverageSetup, _wordMatcher, _synonymMap);
         _isIndexed = false;
     }
 
@@ -124,6 +127,10 @@ public class SearchEngine : IDisposable
         int total = docList.Count;
         int current = 0;
 
+        // Explicitly invalidate index to ensure exception safety (if loop crashes)
+        // and to signal that we are in a dirty state even if holding the lock.
+        _isIndexed = false;
+
         foreach (Document doc in docList)
         {
             if (current % 100 == 0 && ct.IsCancellationRequested)
@@ -154,11 +161,26 @@ public class SearchEngine : IDisposable
         try
         {
             ct.ThrowIfCancellationRequested();
-            if (!_isIndexed)
+            
+            // Always rebuild inverted lists after batch indexing to account for new documents.
+            // Previously we only built if (!_isIndexed), which caused stale indexes during
+            // incremental batch updates where _isIndexed was already true.
+            _vectorModel.BuildInvertedLists(cancellationToken: ct);
+
+            // After we have full corpus statistics (terms, documents, doc lengths,
+            // word-level IDF cache), re-wire them into the coverage engine so that
+            // coverage scoring for this in-memory index uses the same metadata as
+            // a persisted+loaded index. This fixes subtle parity issues where
+            // CoverageEngine was originally constructed before any documents were
+            // indexed (totalDocs==0), causing fallback IDF computations.
+            if (_coverageEngine != null)
             {
-                _vectorModel.BuildInvertedLists(cancellationToken: ct);
-                _isIndexed = true;
+                _coverageEngine.SetCorpusStatistics(_vectorModel.TermCollection, _vectorModel.Documents.Count);
+                _coverageEngine.SetDocumentMetadataCache(_vectorModel.DocumentMetadataCache);
+                _coverageEngine.SetWordIdfCache(_vectorModel.WordIdfCache);
             }
+
+            _isIndexed = true;
             _vectorModel.BuildOptimizedIndexes();
         }
         finally
@@ -221,7 +243,31 @@ public class SearchEngine : IDisposable
                 return Result.MakeEmptyResult();
 
             Query q = new Query(query);
-            q.Text = q.Text.Trim().ToLowerInvariant();
+            string qText = q.Text.Trim();
+
+            // Apply the same normalization (diacritics/whitespace) as indexing
+            // before canonicalization so that synonyms operate in the normalized
+            // token space
+            if (_vectorModel.Tokenizer.TextNormalizer != null)
+            {
+                qText = _vectorModel.Tokenizer.TextNormalizer.Normalize(qText);
+            }
+            qText = qText.ToLowerInvariant();
+
+            // Canonicalize query text using the same synonym map and delimiters
+            // as indexing so that equivalent surface forms are treated
+            // identically throughout the pipeline.
+            if (_synonymMap != null &&
+                _synonymMap.HasCanonicalMappings &&
+                _vectorModel.Tokenizer.TokenizerSetup != null)
+            {
+                qText = _synonymMap.CanonicalizeText(
+                    qText,
+                    _vectorModel.Tokenizer.TokenizerSetup.Delimiters);
+            }
+
+            q.Text = qText;
+
             q.TimeOutLimitMilliseconds = Math.Clamp(q.TimeOutLimitMilliseconds, 0, 10000);
 
             if (string.IsNullOrWhiteSpace(q.Text) && q.EnableFacets)
@@ -349,11 +395,21 @@ public class SearchEngine : IDisposable
 
         Tokenizer tokenizer = new Tokenizer(indexSizes, startPadSize, stopPadSize, textNormalizer, tokenizerSetup);
         VectorModel vectorModel = new VectorModel(tokenizer, stopTermLimit, fieldWeights);
-        SearchEngine engine = new SearchEngine(vectorModel, enableCoverage, coverageSetup, tokenizerSetup, wordMatcherSetup, textNormalizer);
 
         using FileStream stream = File.OpenRead(filePath);
         using BinaryReader reader = new BinaryReader(stream);
         vectorModel.LoadFromStream(reader);
+
+        // Rebuild all derived statistics (document lengths, word-level IDF cache, etc.)
+        // from the loaded index. This mirrors the work done after IndexDocuments and
+        // ensures that coverage and fusion scoring see the same metadata for both
+        // in-memory and persisted indexes.
+        vectorModel.CalculateWeights();
+
+        // Now that the vector model is fully initialized, create the search engine
+        // and its coverage pipeline. The pipeline constructor will wire the freshly
+        // built WordIdfCache into the coverage engine.
+        SearchEngine engine = new SearchEngine(vectorModel, enableCoverage, coverageSetup, tokenizerSetup, wordMatcherSetup, textNormalizer);
 
         bool hasWordMatcher = reader.ReadBoolean();
         if (hasWordMatcher && engine._wordMatcher != null)

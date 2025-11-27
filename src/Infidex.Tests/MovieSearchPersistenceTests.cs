@@ -74,7 +74,9 @@ public class MovieSearchPersistenceTests : MovieSearchParityTestsBase
 
         foreach (var q in queries)
         {
+            Console.WriteLine("ORIGINAL ENGINE --------------------");
             var originalResult = _originalEngine!.Search(new Query(q, 50));
+            Console.WriteLine("LOADED ENGINE --------------------");
             var loadedResult = _loadedEngine!.Search(new Query(q, 50));
 
             Assert.AreEqual(originalResult.Records.Length, loadedResult.Records.Length, 
