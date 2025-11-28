@@ -14,6 +14,24 @@ public class CoverageSetup
     /// Maximum word size for Levenshtein fuzzy matching
     /// </summary>
     public int LevenshteinMaxWordSize { get; set; } = 20;
+
+    /// <summary>
+    /// Maximum number of typographical errors (0, 1 or 2) that would be tolerated.
+    /// Default: 2.
+    /// </summary>
+    public int NumTypos { get; set; } = 2;
+
+    /// <summary>
+    /// Minimum word length for 1-typo correction to be applied.
+    /// Default: 3.
+    /// </summary>
+    public int MinLengthOneTypo { get; set; } = 3;
+
+    /// <summary>
+    /// Minimum word length for 2-typo correction to be applied.
+    /// Default: 7.
+    /// </summary>
+    public int MinLengthTwoTypos { get; set; } = 7;
     
     /// <summary>
     /// Minimum absolute number of word matches required
@@ -98,6 +116,9 @@ public class CoverageSetup
     {
         MinWordSize = source.MinWordSize;
         LevenshteinMaxWordSize = source.LevenshteinMaxWordSize;
+        NumTypos = source.NumTypos;
+        MinLengthOneTypo = source.MinLengthOneTypo;
+        MinLengthTwoTypos = source.MinLengthTwoTypos;
         CoverageMinWordHitsAbs = source.CoverageMinWordHitsAbs;
         CoverageMinWordHitsRelative = source.CoverageMinWordHitsRelative;
         CoverageQLimitForErrorTolerance = source.CoverageQLimitForErrorTolerance;

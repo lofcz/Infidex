@@ -289,7 +289,7 @@ public class CoverageEngine
                 PrefixSuffixMatcher.Match(ref state);
 
             if (_setup.CoverFuzzyWords && qCount > 0 && !FuzzyWordMatcher.AllTermsFullyMatched(ref state))
-                FuzzyWordMatcher.Match(ref state, _setup.MinWordSize, _setup.LevenshteinMaxWordSize);
+                FuzzyWordMatcher.Match(ref state, _setup);
         }
         finally
         {

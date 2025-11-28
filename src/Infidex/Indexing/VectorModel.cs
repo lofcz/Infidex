@@ -400,6 +400,10 @@ public class VectorModel
                 term.QueryOccurrences = (byte)shingle.Occurrences;
                 queryTerms.Add(term);
             }
+            else if (term == null && _fstIndex != null && shingle.Text.Length >= 4)
+            {
+                ExpandMissingTerm(shingle, queryTerms);
+            }
         }
 
         if (queryTerms.Count == 0 || _documents.Count == 0)
@@ -410,6 +414,22 @@ public class VectorModel
             BuildInvertedLists(cancellationToken: CancellationToken.None);
 
         return Bm25Scorer.Search(queryTerms, topK, totalDocs, _docLengths!, _avgDocLength, _stopTermLimit, _documents, bestSegmentsMap, queryIndex, _shortQueryIndex, queryText);
+    }
+
+    private void ExpandMissingTerm(Shingle shingle, List<Term> queryTerms)
+    {
+        // Fuzzy fallback for missing terms (Edit Distance 1 only)
+        List<int> fuzzyOutputs = new List<int>();
+        _fstIndex!.GetWithinEditDistance1(shingle.Text.AsSpan(), fuzzyOutputs);
+        
+        foreach (int termId in fuzzyOutputs)
+        {
+            Term? fuzzyTerm = _termCollection.GetTermByIndex(termId);
+            if (fuzzyTerm != null && fuzzyTerm.DocumentFrequency <= _stopTermLimit)
+            {
+                queryTerms.Add(fuzzyTerm);
+            }
+        }
     }
 
     public void Save(string filePath)

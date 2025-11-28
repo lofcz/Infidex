@@ -78,7 +78,48 @@ public class Tokenizer
         // Add padding
         string paddedText = startPad + text + _stopPadding;
         
-        return GenerateShingles(paddedText);
+        List<Shingle> shingles = GenerateShingles(paddedText);
+
+        // index full words to support fuzzy correction and exact word matching
+        // this ensures that words longer than max n-gram size are present in the index/FST
+        if (TokenizerSetup != null)
+        {
+            ReadOnlySpan<char> span = text.AsSpan();
+            char[] delimiters = TokenizerSetup.Delimiters;
+            int baseOffset = isSegmentContinuation ? 0 : StartPadSize;
+            
+            int i = 0;
+            while (i < span.Length)
+            {
+                // Skip delimiters
+                int start = i;
+                while (start < span.Length && delimiters.Contains(span[start]))
+                {
+                    start++;
+                }
+                
+                if (start >= span.Length) break;
+                
+                // Find end of word
+                int end = start;
+                while (end < span.Length && !delimiters.Contains(span[end]))
+                {
+                    end++;
+                }
+                
+                int len = end - start;
+                if (len >= IndexSizes[0])
+                {
+                    string word = new string(span.Slice(start, len));
+                    // Exact position in padded text
+                    shingles.Add(new Shingle(word, 1, baseOffset + start));
+                }
+                
+                i = end;
+            }
+        }
+        
+        return shingles;
     }
     
     /// <summary>
@@ -351,4 +392,3 @@ public class Tokenizer
         return result;
     }
 }
-
