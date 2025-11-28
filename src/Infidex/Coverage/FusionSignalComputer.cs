@@ -16,6 +16,7 @@ public readonly struct FusionSignals
     public readonly bool HasAnchorStem;
     public readonly byte TrailingMatchDensity;
     public readonly byte SingleTermLexicalSim;
+    public readonly int SingleCharLastTokenBoost;
 
     public FusionSignals(
         int unfilteredQueryTokenCount,
@@ -25,7 +26,8 @@ public readonly struct FusionSignals
         bool hasStemEvidence,
         bool hasAnchorStem,
         byte trailingMatchDensity,
-        byte singleTermLexicalSim)
+        byte singleTermLexicalSim,
+        int singleCharLastTokenBoost = 0)
     {
         UnfilteredQueryTokenCount = unfilteredQueryTokenCount;
         LexicalPrefixLast = lexicalPrefixLast;
@@ -35,6 +37,7 @@ public readonly struct FusionSignals
         HasAnchorStem = hasAnchorStem;
         TrailingMatchDensity = trailingMatchDensity;
         SingleTermLexicalSim = singleTermLexicalSim;
+        SingleCharLastTokenBoost = singleCharLastTokenBoost;
     }
 }
 
@@ -64,11 +67,12 @@ internal static class FusionSignalComputer
         bool hasAnchorStem = false;
         byte trailingMatchDensity = 0;
         byte singleTermLexicalSim = 0;
+        int singleCharLastTokenBoost = 0;
 
         if (qCount == 0 || dCount == 0)
         {
             return new FusionSignals(qCount, lexicalPrefixLast, allPrecedingExact, isPerfectDocLexical,
-                hasStemEvidence, hasAnchorStem, trailingMatchDensity, singleTermLexicalSim);
+                hasStemEvidence, hasAnchorStem, trailingMatchDensity, singleTermLexicalSim, singleCharLastTokenBoost);
         }
 
         // 1. CheckPrefixLastMatch
@@ -162,9 +166,99 @@ internal static class FusionSignalComputer
             float sim = ComputeSingleTermLexicalSimilarity(queryToken, docSpan, docTokens, dCount);
             singleTermLexicalSim = (byte)Math.Clamp(sim * 255f, 0f, 255f);
         }
+        
+        // 7. SingleCharLastTokenBoost
+        if (qCount >= 2)
+        {
+            singleCharLastTokenBoost = ComputeSingleCharLastTokenMatch(querySpan, docSpan, queryTokens, docTokens, qCount, dCount);
+        }
 
         return new FusionSignals(qCount, lexicalPrefixLast, allPrecedingExact, isPerfectDocLexical,
-            hasStemEvidence, hasAnchorStem, trailingMatchDensity, singleTermLexicalSim);
+            hasStemEvidence, hasAnchorStem, trailingMatchDensity, singleTermLexicalSim, singleCharLastTokenBoost);
+    }
+    
+    private static int ComputeSingleCharLastTokenMatch(
+        ReadOnlySpan<char> querySpan,
+        ReadOnlySpan<char> docSpan,
+        Span<StringSlice> queryTokens,
+        Span<StringSlice> docTokens,
+        int qCount,
+        int dCount)
+    {
+        // Check last token is single char
+        var lastQ = queryTokens[qCount - 1];
+        if (lastQ.Length != 1) return 0;
+        char targetChar = char.ToLowerInvariant(querySpan[lastQ.Offset]);
+        if (!char.IsLetter(targetChar)) return 0;
+
+        // Match previous tokens 0..qCount-2
+        int dIndex = 0;
+        int firstMatchIndex = -1;
+        
+        for (int i = 0; i < qCount - 1; i++)
+        {
+            var qSlice = queryTokens[i];
+            ReadOnlySpan<char> qTerm = querySpan.Slice(qSlice.Offset, qSlice.Length);
+            
+            bool found = false;
+            while (dIndex < dCount)
+            {
+                var dSlice = docTokens[dIndex];
+                ReadOnlySpan<char> dTerm = docSpan.Slice(dSlice.Offset, dSlice.Length);
+                
+                // Check if dTerm contains qTerm (case insensitive)
+                if (dTerm.IndexOf(qTerm, StringComparison.OrdinalIgnoreCase) >= 0)
+                {
+                    found = true;
+                    if (firstMatchIndex == -1) firstMatchIndex = dIndex;
+                    // We stay at dIndex to allow multiple matches in same token (e.g. compound)
+                    break;
+                }
+                dIndex++;
+            }
+            if (!found) return 0;
+        }
+        
+        // Check next token
+        if (dIndex + 1 < dCount)
+        {
+            var nextSlice = docTokens[dIndex + 1];
+            ReadOnlySpan<char> nextTerm = docSpan.Slice(nextSlice.Offset, nextSlice.Length);
+            
+            if (nextTerm.Length > 0 && char.ToLowerInvariant(nextTerm[0]) == targetChar)
+            {
+                // Check adjacency (whitespace only between dIndex and dIndex+1)
+                int endOfLast = docTokens[dIndex].Offset + docTokens[dIndex].Length;
+                int startOfNext = nextSlice.Offset;
+                
+                bool adjacencyBroken = false;
+                for (int p = endOfLast; p < startOfNext; p++)
+                {
+                    if (!char.IsWhiteSpace(docSpan[p]))
+                    {
+                        adjacencyBroken = true;
+                        break;
+                    }
+                }
+                
+                if (!adjacencyBroken)
+                {
+                    int boost = 8;
+                    
+                    // Positional decay: prefer matches closer to start (0-16 range)
+                    // This utilizes 4 bits (range 0-15) added to base 8.
+                    int positionalBonus = Math.Max(0, 16 - firstMatchIndex);
+                    boost += positionalBonus;
+                    
+                    if (nextTerm.Length == 1) 
+                        boost += 4;
+                    
+                    return boost;
+                }
+            }
+        }
+        
+        return 0;
     }
 
     private static (bool isPrefixLastMatch, bool allPrecedingExact) CheckPrefixLastMatch(
@@ -473,4 +567,3 @@ internal static class FusionSignalComputer
         return best;
     }
 }
-

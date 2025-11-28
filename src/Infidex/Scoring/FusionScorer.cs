@@ -151,12 +151,9 @@ internal static class FusionScorer
                 isPrefixLastStrong, lexicalPrefixLast, isPerfectDoc, features, n, startsAtBeginning, isClean);
             
             // Special case for single-char last term boost
-            if (features.FusionSignals.UnfilteredQueryTokenCount > features.TermsCount && queryText.Length > 0)
+            if (features.FusionSignals.UnfilteredQueryTokenCount > features.TermsCount)
             {
-               if (CheckSingleCharLastTokenMatch(queryText, documentText, delimiters))
-               {
-                   multiTermPrec += 8;
-               }
+               multiTermPrec += features.FusionSignals.SingleCharLastTokenBoost;
             }
             
             precedence |= multiTermPrec;
@@ -231,54 +228,6 @@ internal static class FusionScorer
         return (finalScore, tiebreaker);
     }
     
-    private static bool CheckSingleCharLastTokenMatch(string queryText, string documentText, char[] delimiters)
-    {
-         ReadOnlySpan<char> query = queryText.AsSpan();
-        int lastTokenStart = query.Length;
-        for (int i = query.Length - 1; i >= 0; i--)
-        {
-            bool isDelim = false;
-            for (int d = 0; d < delimiters.Length; d++)
-            {
-                if (query[i] == delimiters[d])
-                {
-                    isDelim = true;
-                    lastTokenStart = i + 1;
-                    break;
-                }
-            }
-            if (isDelim) break;
-            if (i == 0) lastTokenStart = 0;
-        }
-        
-        if (lastTokenStart < query.Length)
-        {
-            ReadOnlySpan<char> lastToken = query.Slice(lastTokenStart);
-            if (lastToken.Length == 1 && char.IsLetter(lastToken[0]))
-            {
-                char lastCharLower = char.ToLowerInvariant(lastToken[0]);
-                char lastCharUpper = char.ToUpperInvariant(lastToken[0]);
-                
-                ReadOnlySpan<char> doc = documentText.AsSpan();
-                for (int i = 0; i < doc.Length - 2; i++)
-                {
-                    char c1 = doc[i];
-                    if (c1 != ' ' && c1 != ',') continue;
-                    
-                    char c2 = doc[i + 1];
-                    if (c2 != lastCharLower && c2 != lastCharUpper) continue;
-                    
-                    char c3 = doc[i + 2];
-                    if (c3 == '.')
-                    {
-                        return true;
-                    }
-                }
-            }
-        }
-        return false;
-    }
-
     private static void LogExplanation(
         string queryText,
         string documentText,

@@ -610,5 +610,84 @@ public class SchoolSearchParityTests
         Assert.IsTrue(foundAnyScioSkola,
             $"At least one ScioŠkola should appear in top 10 for '{query}' (the 'scioškola' term should still match)");
     }
-}
 
+    /// <summary>
+    /// Validates that for queries like "scio škola x" or "škola scio x" (where x is a letter),
+    /// the search results rank schools starting with that letter (in the city part) higher
+    /// than schools that do not match the letter.
+    /// </summary>
+    [TestMethod]
+    public void ScioskolaLetterPrefix_RanksCorrectCityFirst_AllLetters()
+    {
+        var engine = GetEngine();
+        char[] alphabet = "abcdefghijklmnopqrstuvwxyz".ToCharArray();
+        string[] prefixFormats = new[] { "scio škola {0}", "škola scio {0}" };
+        
+        // Czech culture for diacritic-insensitive comparison
+        var culture = new System.Globalization.CultureInfo("cs-CZ");
+
+        foreach (char letter in alphabet)
+        {
+            foreach (string fmt in prefixFormats)
+            {
+                string query = string.Format(fmt, letter);
+                var result = engine.Search(new Query(query, 50));
+                var records = result.Records;
+
+                if (records.Length == 0) continue;
+
+                bool encounteredNonMatch = false;
+
+                // "ScioŠkola " is 10 chars long (including space)
+                // We want to check if the part AFTER "ScioŠkola " starts with the letter.
+                // Or simply check if "ScioŠkola {letter}" matches the start, ignoring diacritics.
+                // Given "ScioŠkola Brno...", checking if it starts with "ScioŠkola b" works.
+
+                string expectedPrefix = $"ScioŠkola {letter}";
+                
+                // Helper to check if a name matches the target letter
+                bool IsMatch(string name)
+                {
+                     // Check if it starts with "ScioŠkola " and then the letter
+                     // Using IgnoreNonSpace to handle C -> Č, etc.
+                     return culture.CompareInfo.IsPrefix(name, expectedPrefix, 
+                         System.Globalization.CompareOptions.IgnoreNonSpace | System.Globalization.CompareOptions.IgnoreCase);
+                }
+
+                // Check ranking consistency
+                for (int i = 0; i < records.Length; i++)
+                {
+                    var doc = engine.GetDocument(records[i].DocumentId);
+                    string name = doc!.IndexedText;
+                    
+                    bool matches = IsMatch(name);
+
+                    if (matches)
+                    {
+                        if (encounteredNonMatch)
+                        {
+                            // We found a match after finding a non-match. This implies bad ranking.
+                            // However, we should verify if the "non-match" was indeed a school.
+                            // The dataset seems to only contain schools.
+                            
+                            // Dump context for debugging
+                            string context = $"\nQuery: '{query}'\nFailed at index {i} (0-based).\n";
+                            context += "Top results:\n";
+                            for(int k=0; k<=i; k++)
+                            {
+                                var d = engine.GetDocument(records[k].DocumentId);
+                                context += $"  {k}. [{records[k].Score}] {d!.IndexedText} (Match: {IsMatch(d.IndexedText)})\n";
+                            }
+                            
+                            Assert.Fail($"Ranking consistency failure: Found matching school '{name}' after non-matching results for query '{query}'.\n{context}");
+                        }
+                    }
+                    else
+                    {
+                        encounteredNonMatch = true;
+                    }
+                }
+            }
+        }
+    }
+}
