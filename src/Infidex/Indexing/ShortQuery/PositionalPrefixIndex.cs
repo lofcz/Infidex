@@ -119,10 +119,10 @@ internal sealed class PositionalPrefixIndex
     }
     
     /// <summary>
-    /// Finalizes the index after all documents have been added.
+    /// Freezes the index after all documents have been added.
     /// Sorts all posting lists and compacts memory.
     /// </summary>
-    public void Finalize()
+    public void Freeze()
     {
         // Finalize single-char lists
         for (int i = 0; i < _singleCharIndex.Length; i++)

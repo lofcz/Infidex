@@ -69,7 +69,7 @@ public class ReferenceMatchingTests
         Console.WriteLine($"battamam returned {result.Records.Length} results:");
         foreach (var r in result.Records)
         {
-            Console.WriteLine($"  [{r.Score:D3}] Doc {r.DocumentId}");
+            Console.WriteLine($"  [{r.Score:F3}] Doc {r.DocumentId}");
         }
         
         // Expected: 1 result, Doc 6 at position 0

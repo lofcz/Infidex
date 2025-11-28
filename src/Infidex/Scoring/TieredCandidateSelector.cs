@@ -2,6 +2,7 @@ using Infidex.Core;
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using Infidex.Indexing.ShortQuery;
 
 namespace Infidex.Scoring;
 
@@ -50,7 +51,7 @@ internal class TieredCandidateSelector
         upperBounds = new Dictionary<int, float>();
         
         if (queryTerms.Count == 0)
-            return new HashSet<int>();
+            return [];
 
         // TIER 0-1: PREFIX PRECEDENCE - Use PositionalPrefixIndex for high-quality prefix matches
         // This encodes the rule: "prefix at start > prefix at word boundary > substring match"
@@ -92,13 +93,12 @@ internal class TieredCandidateSelector
             float maxScore = idf * 2.2f; // Rough upper bound for BM25 (k1=1.2, b=0.75)
             terms.Add(new TermInfo(term, idf, maxScore, term.QueryOccurrences));
         }
-
-        // CRITICAL: If we're missing terms, return empty set to signal fallback
-        // This ensures typo queries use the old full-scan approach (coverage handles them)
-        if (terms.Count == 0 || missingTerms > 0)
+        
+        // If we have no valid terms at all, then we must return empty.
+        if (terms.Count == 0)
         {
             upperBounds.Clear();
-            return new HashSet<int>(); // Empty = use old behavior for typo queries
+            return [];
         }
 
         // Check if any term has very low DF (likely rare/typo term)
@@ -112,8 +112,8 @@ internal class TieredCandidateSelector
             }
         }
         
-        // For typo queries or single-term queries, use disjunctive mode
-        if (hasPotentialTypo || queryTerms.Count == 1)
+        // For typo queries, missing terms, or single-term queries, use disjunctive mode
+        if (hasPotentialTypo || missingTerms > 0 || queryTerms.Count == 1)
         {
             return SelectCandidatesDisjunctive(queryTerms, topK, totalDocs, upperBounds);
         }
@@ -121,7 +121,7 @@ internal class TieredCandidateSelector
         // Sort by IDF descending - process most selective terms first
         terms.Sort((a, b) => b.Idf.CompareTo(a.Idf));
 
-        HashSet<int> candidates = new HashSet<int>();
+        HashSet<int> candidates = [];
 
         // Tier 0: Full AND (all terms required) - highest quality
         if (terms.Count >= 2)
@@ -186,6 +186,7 @@ internal class TieredCandidateSelector
     /// <summary>
     /// Disjunctive (OR) mode: Returns union of posting lists for typo/fuzzy queries.
     /// Preserves recall by not requiring all terms to be present.
+    /// Optimized to ignore low-IDF (stop) words when other selective terms are present.
     /// </summary>
     private static HashSet<int> SelectCandidatesDisjunctive(
         List<Term> queryTerms,
@@ -193,10 +194,12 @@ internal class TieredCandidateSelector
         int totalDocs,
         Dictionary<int, float> upperBounds)
     {
-        HashSet<int> candidates = new HashSet<int>();
+        HashSet<int> candidates = [];
 
         // Sort by IDF descending - high IDF terms are most selective
         List<TermInfo> terms = new List<TermInfo>(queryTerms.Count);
+        float maxIdf = 0f;
+        
         foreach (Term term in queryTerms)
         {
             if (term.DocumentFrequency <= 0)
@@ -204,14 +207,29 @@ internal class TieredCandidateSelector
 
             float idf = MathF.Log10((float)totalDocs / term.DocumentFrequency);
             float maxScore = idf * 2.2f;
+            
+            if (idf > maxIdf) maxIdf = idf;
+            
             terms.Add(new TermInfo(term, idf, maxScore, term.QueryOccurrences));
         }
 
         terms.Sort((a, b) => b.Idf.CompareTo(a.Idf));
 
-        // Add documents from all terms (OR logic)
+        // Add documents from terms (OR logic)
+        // Optimization: Stop adding candidates if we hit low-quality terms
+        // provided we have already found some candidates.
+        // This prevents "the" (IDF~0) from exploding
+        
+        bool hasSelectiveCandidates = false;
+
         foreach (TermInfo termInfo in terms)
         {
+            // Skip low-IDF terms (like stop words) if we have other selective terms.
+            // Heuristic: if term IDF is < 20% of max IDF, and we have > 1 term, skip it for candidate generation.
+            bool isLowQuality = termInfo.Idf < (maxIdf * 0.2f);
+            if (terms.Count > 1 && isLowQuality && hasSelectiveCandidates)
+                continue;
+
             List<int>? docIds = termInfo.Term.GetDocumentIds();
             if (docIds == null)
                 continue;
@@ -228,6 +246,9 @@ internal class TieredCandidateSelector
                     upperBounds[docId] += termInfo.MaxScore;
                 }
             }
+            
+            if (!isLowQuality && candidates.Count > 0)
+                hasSelectiveCandidates = true;
 
             // Early stop if we have enough candidates
             if (candidates.Count >= topK * 100)
@@ -244,12 +265,12 @@ internal class TieredCandidateSelector
     private static HashSet<int> IntersectAllTerms(List<TermInfo> terms)
     {
         if (terms.Count == 0)
-            return new HashSet<int>();
+            return [];
 
         if (terms.Count == 1)
         {
             List<int>? docIds = terms[0].Term.GetDocumentIds();
-            return docIds != null ? new HashSet<int>(docIds) : new HashSet<int>();
+            return docIds != null ? [..docIds] : [];
         }
 
         // Get all posting lists
@@ -258,7 +279,7 @@ internal class TieredCandidateSelector
         {
             List<int>? docIds = termInfo.Term.GetDocumentIds();
             if (docIds == null || docIds.Count == 0)
-                return new HashSet<int>(); // If any term has no postings, intersection is empty
+                return []; // If any term has no postings, intersection is empty
             
             postingLists.Add(docIds);
         }
@@ -321,7 +342,7 @@ internal class TieredCandidateSelector
         int totalDocs,
         out float upperBound)
     {
-        HashSet<int> candidates = new HashSet<int>();
+        HashSet<int> candidates = [];
         upperBound = 0f;
 
         // Normalize query for prefix matching
@@ -334,7 +355,7 @@ internal class TieredCandidateSelector
         for (int len = maxPrefixLen; len >= prefixIndex.MinPrefixLength; len--)
         {
             ReadOnlySpan<char> prefix = queryLower.AsSpan(0, len);
-            var postingList = prefixIndex.GetPostingList(prefix);
+            PrefixPostingList? postingList = prefixIndex.GetPostingList(prefix);
             
             if (postingList == null || postingList.Count == 0)
                 continue;

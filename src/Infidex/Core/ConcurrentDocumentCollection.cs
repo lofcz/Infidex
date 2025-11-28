@@ -367,7 +367,7 @@ public sealed class ConcurrentDocumentCollection : IDisposable
             _documents.AddRange(compacted);
             
             _keyToIds.Clear();
-            foreach (var kvp in newKeyToIds)
+            foreach (KeyValuePair<long, List<int>> kvp in newKeyToIds)
                 _keyToIds[kvp.Key] = kvp.Value;
         }
         finally

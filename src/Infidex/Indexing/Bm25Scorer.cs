@@ -1,6 +1,7 @@
 using Infidex.Core;
 using Infidex.Internalized.CommunityToolkit;
 using Infidex.Utilities;
+using System.Buffers;
 
 namespace Infidex.Indexing;
 
@@ -22,9 +23,9 @@ internal static class Bm25Scorer
 
     /// <summary>
     /// Searches using tiered candidate selection with MaxScore algorithm for exact early termination.
-    /// Uses WAND-style posting list intersection to reduce candidates from millions to thousands.
+    /// Returns TopKHeap with float scores.
     /// </summary>
-    public static ScoreArray Search(
+    public static TopKHeap Search(
         List<Term> queryTerms,
         int topK,
         int totalDocs,
@@ -37,25 +38,16 @@ internal static class Bm25Scorer
         ShortQuery.PositionalPrefixIndex? prefixIndex = null,
         string? originalQuery = null)
     {
-        ScoreArray scoreArray = new ScoreArray();
+        TopKHeap resultHeap = new TopKHeap(topK);
 
         if (queryTerms.Count == 0 || totalDocs == 0)
-            return scoreArray;
+            return resultHeap;
 
-        // OPTIMIZATION: Always use tiered candidate selection with PREFIX PRECEDENCE
-        // PRECEDENCE RULES (provable quality tiers):
-        // Tier 0: Prefix match at position 0 (document start) - HIGHEST
-        // Tier 1: Prefix match at word boundaries - HIGH  
-        // Tier 2: Contains all rarest terms (AND logic) - MEDIUM
-        // Tier 3: Contains any query term (OR logic) - LOW (fallback for typos)
-        // Coverage/fuzzy matching CAN'T outrank higher precedence tiers
-        
         HashSet<int> candidates = Scoring.TieredCandidateSelector.SelectCandidates(
             queryTerms, topK, totalDocs, avgDocLength, prefixIndex, originalQuery, out Dictionary<int, float> upperBounds);
         bool useTieredSelection = candidates.Count > 0;
         if (!useTieredSelection)
         {
-            // Create a dummy "all candidates" set - we'll iterate postings instead
             candidates = new HashSet<int>();
         }
 
@@ -66,12 +58,12 @@ internal static class Bm25Scorer
 
         float[] suffixMaxScore = ComputeSuffixSums(termInfos);
         
-        PriorityQueue<int, float> topKHeap = new PriorityQueue<int, float>();
+        // Internal heap for WAND pruning
+        PriorityQueue<int, float> pruningHeap = new PriorityQueue<int, float>();
         float threshold = 0f;
 
         if (useTieredSelection)
         {
-            // FAST PATH: Sparse dictionary for exact queries
             Dictionary<int, float> docScores = new Dictionary<int, float>(candidates.Count);
 
             for (int i = 0; i < termInfos.Length; i++)
@@ -82,28 +74,106 @@ internal static class Bm25Scorer
 
                 float remainingMaxScore = suffixMaxScore[i + 1];
                 ProcessTermWithCandidates(info, remainingMaxScore, topK, totalDocs, docLengths, avgdl,
-                    documents, docScores, candidates, topKHeap, ref threshold, bestSegmentsMap, queryIndex);
+                    documents, docScores, candidates, pruningHeap, ref threshold, bestSegmentsMap, queryIndex);
             }
 
-            return NormalizeScoresSparse(docScores, documents, scoreArray, totalDocs);
+            PopulateResultHeap(resultHeap, docScores, documents, topK, pruningHeap);
         }
         else
         {
-            // FALLBACK PATH: Dense array for typo queries (old behavior)
-            float[] docScores = new float[totalDocs];
+            // Rent a buffer from the shared ArrayPool to avoid LOH allocations for large document sets
+            float[] docScores = ArrayPool<float>.Shared.Rent(totalDocs);
+            Array.Clear(docScores, 0, totalDocs);
 
-            for (int i = 0; i < termInfos.Length; i++)
+            try
             {
-                TermScoreInfo info = termInfos[i];
-                if (info.Idf <= 0f)
-                    continue;
+                for (int i = 0; i < termInfos.Length; i++)
+                {
+                    TermScoreInfo info = termInfos[i];
+                    if (info.Idf <= 0f)
+                        continue;
 
-                float remainingMaxScore = suffixMaxScore[i + 1];
-                ProcessTermFullScan(info, remainingMaxScore, topK, totalDocs, docLengths, avgdl,
-                    documents, docScores, topKHeap, ref threshold, bestSegmentsMap, queryIndex);
+                    float remainingMaxScore = suffixMaxScore[i + 1];
+                    ProcessTermFullScan(info, remainingMaxScore, topK, totalDocs, docLengths, avgdl,
+                        documents, docScores, pruningHeap, ref threshold, bestSegmentsMap, queryIndex);
+                }
+
+                PopulateResultHeapDense(resultHeap, docScores, documents, topK, pruningHeap);
             }
+            finally
+            {
+                ArrayPool<float>.Shared.Return(docScores);
+            }
+        }
 
-            return NormalizeScoresDense(docScores, documents, scoreArray);
+        return resultHeap;
+    }
+
+    private static void PopulateResultHeap(
+        TopKHeap resultHeap, 
+        Dictionary<int, float> docScores, 
+        DocumentCollection documents, 
+        int topK,
+        PriorityQueue<int, float> pruningHeap)
+    {
+        if (topK < int.MaxValue && pruningHeap.Count > 0)
+        {
+             while (pruningHeap.TryDequeue(out int internalId, out float score))
+             {
+                 Document? doc = documents.GetDocument(internalId);
+                 if (doc != null && !doc.Deleted)
+                 {
+                     resultHeap.Add(doc.DocumentKey, score);
+                 }
+             }
+        }
+        else
+        {
+            foreach (var kvp in docScores)
+            {
+                if (kvp.Value > 0f)
+                {
+                    Document? doc = documents.GetDocument(kvp.Key);
+                    if (doc != null && !doc.Deleted)
+                    {
+                        resultHeap.Add(doc.DocumentKey, kvp.Value);
+                    }
+                }
+            }
+        }
+    }
+
+    private static void PopulateResultHeapDense(
+        TopKHeap resultHeap, 
+        float[] docScores, 
+        DocumentCollection documents, 
+        int topK,
+        PriorityQueue<int, float> pruningHeap)
+    {
+        if (topK < int.MaxValue && pruningHeap.Count > 0)
+        {
+             while (pruningHeap.TryDequeue(out int internalId, out float score))
+             {
+                 Document? doc = documents.GetDocument(internalId);
+                 if (doc != null && !doc.Deleted)
+                 {
+                     resultHeap.Add(doc.DocumentKey, score);
+                 }
+             }
+        }
+        else
+        {
+            for (int i = 0; i < docScores.Length; i++)
+            {
+                if (docScores[i] > 0f)
+                {
+                    Document? doc = documents.GetDocument(i);
+                    if (doc != null && !doc.Deleted)
+                    {
+                        resultHeap.Add(doc.DocumentKey, docScores[i]);
+                    }
+                }
+            }
         }
     }
 
@@ -167,44 +237,83 @@ internal static class Bm25Scorer
         if (docIds == null || docWeights == null)
             return;
 
-        // CRITICAL OPTIMIZATION: Iterate candidates (1k), NOT postings (500k)!
-        foreach (int internalId in candidates)
+        // Optimization: Choose the iteration strategy based on set sizes.
+        // If the posting list is significantly smaller than the candidate set,
+        // it is faster to iterate the postings and check existence in candidates.
+        // This avoids O(N) binary searches where N=candidates.Count.
+        if (docIds.Count < candidates.Count)
         {
-            if ((uint)internalId >= (uint)totalDocs)
-                continue;
-
-            // Binary search to find position in sorted posting list (O(log n))
-            int postingIndex = docIds.BinarySearch(internalId);
-            if (postingIndex < 0)
-                continue; // This candidate doesn't contain this term
-
-            docScores.TryGetValue(internalId, out float currentScore);
-            if (topK < int.MaxValue && topKHeap.Count >= topK)
+            for (int j = 0; j < docIds.Count; j++)
             {
-                float upperBound = currentScore + info.MaxScore + remainingMaxScore;
-                if (upperBound <= threshold)
+                int internalId = docIds[j];
+                if ((uint)internalId >= (uint)totalDocs) continue;
+
+                if (!candidates.Contains(internalId))
                     continue;
+
+                ProcessDocScore(internalId, docWeights[j], info, remainingMaxScore, topK, totalDocs,
+                    docLengths, avgdl, documents, docScores, topKHeap, ref threshold, bestSegmentsMap, queryIndex);
             }
-
-            Document? doc = documents.GetDocument(internalId);
-            if (doc == null || doc.Deleted)
-                continue;
-
-            float tf = docWeights[postingIndex];
-            if (tf <= 0f)
-                continue;
-
-            float dl = docLengths[internalId];
-            if (dl <= 0f)
-                dl = 1f;
-
-            float termScore = ComputeTermScore(tf, dl, avgdl, info.Idf);
-            float newScore = currentScore + termScore;
-            docScores[internalId] = newScore;
-
-            UpdateTopK(internalId, newScore, topK, topKHeap, ref threshold);
-            TrackBestSegment(doc, internalId, bestSegmentsMap, queryIndex);
         }
+        else
+        {
+            // iterate candidates and binary search postings
+            foreach (int internalId in candidates)
+            {
+                if ((uint)internalId >= (uint)totalDocs)
+                    continue;
+
+                int postingIndex = docIds.BinarySearch(internalId);
+                if (postingIndex < 0)
+                    continue;
+
+                ProcessDocScore(internalId, docWeights[postingIndex], info, remainingMaxScore, topK, totalDocs,
+                    docLengths, avgdl, documents, docScores, topKHeap, ref threshold, bestSegmentsMap, queryIndex);
+            }
+        }
+    }
+
+    private static void ProcessDocScore(
+        int internalId,
+        float tf,
+        TermScoreInfo info,
+        float remainingMaxScore,
+        int topK,
+        int totalDocs,
+        float[] docLengths,
+        float avgdl,
+        DocumentCollection documents,
+        Dictionary<int, float> docScores,
+        PriorityQueue<int, float> topKHeap,
+        ref float threshold,
+        Dictionary<int, byte>? bestSegmentsMap,
+        int queryIndex)
+    {
+        docScores.TryGetValue(internalId, out float currentScore);
+        if (topK < int.MaxValue && topKHeap.Count >= topK)
+        {
+            float upperBound = currentScore + info.MaxScore + remainingMaxScore;
+            if (upperBound <= threshold)
+                return;
+        }
+
+        Document? doc = documents.GetDocument(internalId);
+        if (doc == null || doc.Deleted)
+            return;
+
+        if (tf <= 0f)
+            return;
+
+        float dl = docLengths[internalId];
+        if (dl <= 0f)
+            dl = 1f;
+
+        float termScore = ComputeTermScore(tf, dl, avgdl, info.Idf);
+        float newScore = currentScore + termScore;
+        docScores[internalId] = newScore;
+
+        UpdateTopK(internalId, newScore, topK, topKHeap, ref threshold);
+        TrackBestSegment(doc, internalId, bestSegmentsMap, queryIndex);
     }
 
     private static void ProcessTermFullScan(
@@ -227,7 +336,6 @@ internal static class Bm25Scorer
         if (docIds == null || docWeights == null)
             return;
 
-        // Old behavior: iterate all postings for typo/fuzzy queries
         for (int j = 0; j < docIds.Count; j++)
         {
             int internalId = docIds[j];
@@ -305,69 +413,6 @@ internal static class Bm25Scorer
         {
             bestSegmentsMap[baseId] = (byte)segmentNumber;
         }
-    }
-
-    private static ScoreArray NormalizeScoresSparse(Dictionary<int, float> docScores, DocumentCollection documents, ScoreArray scoreArray, int totalDocs)
-    {
-        if (docScores.Count == 0)
-            return scoreArray;
-
-        float maxScore = 0f;
-        foreach (float score in docScores.Values)
-        {
-            if (score > maxScore)
-                maxScore = score;
-        }
-
-        if (maxScore <= 0f)
-            return scoreArray;
-
-        foreach (KeyValuePair<int, float> kvp in docScores)
-        {
-            int internalId = kvp.Key;
-            float raw = kvp.Value;
-
-            if (raw <= 0f || (uint)internalId >= (uint)totalDocs)
-                continue;
-
-            Document? doc = documents.GetDocument(internalId);
-            if (doc == null || doc.Deleted)
-                continue;
-
-            byte scaled = (byte)MathF.Min(255f, (raw / maxScore) * 255f);
-            scoreArray.Add(doc.DocumentKey, scaled);
-        }
-
-        return scoreArray;
-    }
-
-    private static ScoreArray NormalizeScoresDense(float[] docScores, DocumentCollection documents, ScoreArray scoreArray)
-    {
-        float maxScore = 0f;
-        for (int i = 0; i < docScores.Length; i++)
-        {
-            if (docScores[i] > maxScore)
-                maxScore = docScores[i];
-        }
-
-        if (maxScore <= 0f)
-            return scoreArray;
-
-        for (int internalId = 0; internalId < docScores.Length; internalId++)
-        {
-            float raw = docScores[internalId];
-            if (raw <= 0f)
-                continue;
-
-            Document? doc = documents.GetDocument(internalId);
-            if (doc == null || doc.Deleted)
-                continue;
-
-            byte scaled = (byte)MathF.Min(255f, (raw / maxScore) * 255f);
-            scoreArray.Add(doc.DocumentKey, scaled);
-        }
-
-        return scoreArray;
     }
 
     public static float ComputeIdf(int totalDocuments, int documentFrequency)

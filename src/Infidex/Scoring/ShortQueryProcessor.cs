@@ -13,15 +13,8 @@ namespace Infidex.Scoring;
 /// </summary>
 internal static class ShortQueryProcessor
 {
-    /// <summary>
-    /// Upper bound on how many FST term IDs we will materialize per prefix pattern.
-    /// This keeps short-query prefix expansion work data-agnostic and predictable.
-    /// </summary>
     private const int MaxFstTermsPerPrefix = 4096;
 
-    /// <summary>
-    /// Searches for single-character queries using direct lexical scan.
-    /// </summary>
     public static ScoreEntry[] SearchSingleCharacter(
         char ch,
         Dictionary<int, byte>? bestSegmentsMap,
@@ -31,7 +24,7 @@ internal static class ShortQueryProcessor
         char[] delimiters)
     {
         ch = char.ToLowerInvariant(ch);
-        ScoreArray scores = new ScoreArray();
+        List<ScoreEntry> rawScores = [];
 
         foreach (Document doc in documents)
         {
@@ -113,24 +106,26 @@ internal static class ShortQueryProcessor
             if (titleEqualsChar) precedence |= 8;
             if (words.Length <= 3) precedence |= 32;
 
-            byte baseScore;
+            float baseScore;
             if (hasWordStart)
             {
                 int posComponent = 255 - Math.Min(firstWordIndex * 16, 240);
                 int densityComponent = Math.Min(wordStartCount * 8, 32);
                 int raw = Math.Clamp(posComponent + densityComponent, 0, 255);
-                baseScore = (byte)raw;
+                baseScore = (float)raw / 255f;
             }
             else
             {
                 int posComponent = 200 - Math.Min(Math.Max(firstCharIndex, 0) * 4, 180);
                 int densityComponent = Math.Min(charCount * 4, 40);
                 int raw = Math.Clamp(posComponent + densityComponent, 0, 200);
-                baseScore = (byte)Math.Max(1, raw);
+                baseScore = (float)Math.Max(1, raw) / 255f;
             }
 
-            ushort finalScore = (ushort)((precedence << 8) | baseScore);
-            scores.Add(doc.DocumentKey, finalScore);
+            // Combine precedence and base score
+            float finalScore = (float)precedence + baseScore;
+            
+            rawScores.Add(new ScoreEntry(finalScore, doc.DocumentKey));
 
             if (bestSegmentsMap != null)
             {
@@ -145,22 +140,17 @@ internal static class ShortQueryProcessor
             }
         }
 
-        ScoreArray consolidated = SegmentProcessor.ConsolidateSegments(scores, bestSegmentsMap);
-        ScoreEntry[] all = consolidated.GetAll();
+        ScoreEntry[] consolidated = SegmentProcessor.ConsolidateSegments(rawScores, bestSegmentsMap);
 
-        if (maxResults < int.MaxValue && all.Length > maxResults)
+        if (maxResults < int.MaxValue && consolidated.Length > maxResults)
         {
-            all = all.Take(maxResults).ToArray();
+            consolidated = consolidated.Take(maxResults).ToArray();
         }
 
-        return all;
+        return consolidated;
     }
 
-    /// <summary>
-    /// Searches short queries (below n-gram threshold) using prefix matching with inverted index.
-    /// Uses FST for O(prefix length) term lookup when available.
-    /// </summary>
-    public static ScoreArray SearchShortQuery(
+    public static TopKHeap SearchShortQuery(
         string searchText,
         string searchLower,
         int minIndexSize,
@@ -172,7 +162,8 @@ internal static class ShortQueryProcessor
         char[] delimiters,
         bool enableDebugLogging)
     {
-        ScoreArray relevancyScores = new ScoreArray();
+        // Use a generous heap limit since we filter later
+        TopKHeap relevancyScores = new TopKHeap(int.MaxValue);
         HashSet<long> matchedDocs = [];
         HashSet<long> firstTokenPrefixDocs = [];
         Dictionary<long, int> docScores = new Dictionary<long, int>();
@@ -181,19 +172,15 @@ internal static class ShortQueryProcessor
 
         if (enableDebugLogging)
         {
-            Console.WriteLine($"[DEBUG] Generated {prefixPatterns.Count} prefix patterns: {string.Join(", ", prefixPatterns.Select(p => $"'{p}'"))}");
+            Console.WriteLine($"[DEBUG] Generated {prefixPatterns.Count} prefix patterns");
         }
 
-        // Phase 1: Exact prefix matching using FST or fallback to linear scan
         foreach (string pattern in prefixPatterns)
         {
             IEnumerable<Term> matchingTerms;
             
             if (fstIndex != null)
             {
-                // O(prefix length) FST lookup - returns term indices.
-                // We bound the number of FST outputs we materialize per pattern to avoid
-                // prefix explosion on very common patterns like "s", "st", etc.
                 int termCount = fstIndex.CountByPrefix(pattern.AsSpan());
                 if (termCount == 0)
                     continue;
@@ -210,7 +197,6 @@ internal static class ShortQueryProcessor
             }
             else
             {
-                // Fallback to linear scan
                 matchingTerms = termCollection.GetAllTerms().Where(t => t.Text?.StartsWith(pattern) == true);
             }
 
@@ -221,14 +207,12 @@ internal static class ShortQueryProcessor
             }
         }
 
-        // Phase 2: Fuzzy fallback if needed
         if (matchedDocs.Count < 100)
         {
             ProcessFuzzyFallback(prefixPatterns, searchLower, termCollection, documents,
                 docScores, matchedDocs, firstTokenPrefixDocs, bestSegmentsMap);
         }
 
-        // Build final scores with precedence
         BuildFinalScores(relevancyScores, docScores, documents, searchLower,
             firstTokenPrefixDocs, delimiters);
 
@@ -358,7 +342,7 @@ internal static class ShortQueryProcessor
     }
 
     private static void BuildFinalScores(
-        ScoreArray relevancyScores,
+        TopKHeap relevancyScores,
         Dictionary<long, int> docScores,
         DocumentCollection documents,
         string searchLower,
@@ -374,9 +358,9 @@ internal static class ShortQueryProcessor
             if (doc == null || doc.Deleted)
                 continue;
 
-            byte normalizedScore = maxScore > 0
-                ? (byte)Math.Min(255, (kvp.Value * 255L) / maxScore)
-                : (byte)Math.Min(255, kvp.Value);
+            float normalizedScore = maxScore > 0
+                ? (float)kvp.Value / maxScore
+                : kvp.Value / 255f; 
 
             string titleLower = doc.IndexedText.ToLowerInvariant();
             string trimmedTitle = titleLower.Trim();
@@ -385,7 +369,8 @@ internal static class ShortQueryProcessor
             int precedence = ComputePrecedence(queryTokens, words, searchLower, trimmedTitle,
                 firstTokenPrefixDocs.Contains(kvp.Key));
 
-            ushort finalScore = (ushort)((precedence << 8) | normalizedScore);
+            // Float score = Precedence + Normalized
+            float finalScore = (float)precedence + normalizedScore;
             relevancyScores.Add(kvp.Key, finalScore);
         }
     }

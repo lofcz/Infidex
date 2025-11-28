@@ -124,7 +124,7 @@ public class SchoolSearchParityTests
             }
 
             int targetIndex = -1;
-            int targetScore = -1;
+            float targetScore = -1;
 
             for (int i = 0; i < records.Length; i++)
             {
@@ -217,8 +217,8 @@ public class SchoolSearchParityTests
             $"First result should be ScioŠkola Zlín, but was: {firstDoc.IndexedText}");
 
         // Find scores for both schools
-        int zlinScore = -1;
-        int kolinScore = -1;
+        float zlinScore = -1;
+        float kolinScore = -1;
 
         foreach (var record in records)
         {
@@ -299,8 +299,8 @@ public class SchoolSearchParityTests
             $"First result should be ScioŠkola Zlín (query contains 'zlín'), but was: {firstDoc.IndexedText}");
 
         // Find scores for both schools
-        int zlinScore = -1;
-        int kolinScore = -1;
+        float zlinScore = -1;
+        float kolinScore = -1;
 
         foreach (var record in records)
         {
@@ -352,8 +352,8 @@ public class SchoolSearchParityTests
             $"First result should be ScioŠkola Zlín for 'sciozlín', but was: {topDoc.IndexedText}");
 
         // If Kolín appears, it must have a lower score
-        int zlinScore = records[0].Score;
-        int kolinScore = -1;
+        float zlinScore = records[0].Score;
+        float kolinScore = -1;
 
         foreach (var record in records)
         {
@@ -402,7 +402,7 @@ public class SchoolSearchParityTests
             $"First result should contain '{expectedSchoolSubstring}', but was: {firstDoc.IndexedText}");
 
         // Requirement 2: The correct ScioŠkola must have a strictly higher score than others
-        int targetScore = records[0].Score;
+        float targetScore = records[0].Score;
         for (int i = 1; i < records.Length; i++)
         {
             var doc = engine.GetDocument(records[i].DocumentId);
@@ -471,7 +471,7 @@ public class SchoolSearchParityTests
         const string targetName = "Základní škola Dr. Miroslava Tyrše, Česká Lípa, Mánesova 1526, příspěvková organizace";
 
         int targetIndex = -1;
-        int targetScore = -1;
+        float targetScore = -1;
 
         for (int i = 0; i < records.Length; i++)
         {

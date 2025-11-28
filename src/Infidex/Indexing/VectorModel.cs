@@ -280,7 +280,7 @@ public class VectorModel
         // Finalize the short-query positional prefix index and create resolver.
         if (_shortQueryIndex != null)
         {
-            _shortQueryIndex.Finalize();
+            _shortQueryIndex.Freeze();
             
             char[] delimiters = _tokenizer.TokenizerSetup?.Delimiters ?? [' '];
             _shortQueryResolver = new ShortQueryResolver(_shortQueryIndex, _documents, delimiters);
@@ -384,10 +384,10 @@ public class VectorModel
         return _fstIndex?.HasPrefix(prefix.AsSpan()) ?? false;
     }
     
-    internal ScoreArray Search(string queryText, Dictionary<int, byte>? bestSegmentsMap = null, int queryIndex = 0)
+    internal TopKHeap Search(string queryText, Dictionary<int, byte>? bestSegmentsMap = null, int queryIndex = 0)
         => SearchWithMaxScore(queryText, int.MaxValue, bestSegmentsMap, queryIndex);
 
-    internal ScoreArray SearchWithMaxScore(string queryText, int topK, Dictionary<int, byte>? bestSegmentsMap = null, int queryIndex = 0)
+    internal TopKHeap SearchWithMaxScore(string queryText, int topK, Dictionary<int, byte>? bestSegmentsMap = null, int queryIndex = 0)
     {
         Shingle[] queryShingles = _tokenizer.TokenizeForSearch(queryText, out _, false);
 
@@ -403,7 +403,7 @@ public class VectorModel
         }
 
         if (queryTerms.Count == 0 || _documents.Count == 0)
-            return new ScoreArray();
+            return new TopKHeap(topK);
 
         int totalDocs = _documents.Count;
         if (_docLengths == null || _docLengths.Length != totalDocs || _avgDocLength <= 0f)

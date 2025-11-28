@@ -329,14 +329,13 @@ public abstract class MovieSearchParityTestsBase
         var stargirl = records.FirstOrDefault(r => movies[(int)r.DocumentId].Title == "Stargirl");
         var stardust = records.FirstOrDefault(r => movies[(int)r.DocumentId].Title == "Stardust");
 
-        if (starKid == default(ScoreEntry)) Console.WriteLine("MISSING: Star Kid");
-        if (stardom == default(ScoreEntry)) Console.WriteLine("MISSING: Stardom");
+        if (starKid.DocumentId == 0 && starKid.Score == 0 && movies[0].Title != "Star Kid") Console.WriteLine("MISSING: Star Kid");
+        if (stardom.DocumentId == 0 && stardom.Score == 0 && movies[0].Title != "Stardom") Console.WriteLine("MISSING: Stardom");
 
         // Verify we found the key documents
-        // Note: ScoreEntry is a struct, so default is mostly zeros. We check DocumentId is not 0 (assuming 0 is not Star Kid/Stardom, which is safe given 40k movies)
-        // Or safer: check if we found them by checking ID against list if we had map, but here we rely on FirstOrDefault logic
-        // Better check:
-        bool foundStarKid = starKid.Score > 0 || (starKid.DocumentId == 0 && movies[0].Title == "Star Kid");
+        // Since ScoreEntry is a struct, default value has DocumentId=0 and Score=0.
+        // We check if Score > 0 to confirm it was found (assuming no valid result has score 0).
+        bool foundStarKid = starKid.Score > 0 || (starKid.DocumentId == 0 && movies[0].Title == "Star Kid" && starKid.Score > 0);
         bool foundStardom = stardom.Score > 0;
 
         Assert.IsTrue(foundStarKid, "Should find 'Star Kid'");

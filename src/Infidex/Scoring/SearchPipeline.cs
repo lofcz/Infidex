@@ -18,15 +18,8 @@ internal sealed class SearchPipeline
     private readonly CoverageSetup? _coverageSetup;
     private readonly WordMatcher.WordMatcher? _wordMatcher;
     private readonly SynonymMap? _synonymMap;
-        
-    // Short-query specialization thresholds
+
     private const int ShortQueryMaxLength = 3;
-    
-    /// <summary>
-    /// If a short query (length <= ShortQueryMaxLength) matches more than this many
-    /// documents in the positional prefix index, we skip coverage and rely on the
-    /// short-query fast path / BM25 backbone instead.
-    /// </summary>
     private const int ShortQueryCoverageDocCap = 500;
 
     public static bool EnableDebugLogging => FusionScorer.EnableDebugLogging;
@@ -44,10 +37,6 @@ internal sealed class SearchPipeline
         _wordMatcher = wordMatcher;
         _synonymMap = synonymMap;
 
-        // enable when debugging
-        // FusionScorer.EnableDebugLogging = true;
-        
-        // Wire corpus statistics into coverage engine for IDF computation
         if (_coverageEngine != null)
         {
             _coverageEngine.SetCorpusStatistics(_vectorModel.TermCollection, _vectorModel.Documents.Count);
@@ -59,9 +48,14 @@ internal sealed class SearchPipeline
     public ScoreEntry[] Execute(string searchText, CoverageSetup? coverageSetup, int coverageDepth, int maxResults = int.MaxValue)
     {
         Stopwatch perfStopwatch = Stopwatch.StartNew();
-        long normMs = 0, tfidfMs = 0, consolidateMs = 0, topKMs = 0, prescreenMs = 0, 
-             wordMatcherCoverageMs = 0, tfidfCoverageMs = 0, truncationMs = 0;
-        long allocMs = 0; // No expensive allocation for segmented docs anymore!
+        long normMs = 0,
+            tfidfMs = 0,
+            consolidateMs = 0,
+            topKMs = 0,
+            prescreenMs = 0,
+            wordMatcherCoverageMs = 0,
+            tfidfCoverageMs = 0,
+            truncationMs = 0;
 
         if (string.IsNullOrWhiteSpace(searchText))
             return [];
@@ -71,7 +65,7 @@ internal sealed class SearchPipeline
         {
             searchText = _vectorModel.Tokenizer.TextNormalizer.Normalize(searchText);
         }
-        
+
         normMs = perfStopwatch.ElapsedMilliseconds - normStart;
 
         if (EnableDebugLogging)
@@ -79,20 +73,17 @@ internal sealed class SearchPipeline
             Console.WriteLine($"[DEBUG] Search start: normalized=\"{searchText}\", coverageDepth={coverageDepth}");
         }
 
-        // Lazy sparse storage: only allocate if we encounter segmented documents (rare)
-        // For non-segmented documents (99.9% of cases), this stays null - zero overhead!
         Dictionary<int, byte>? bestSegmentsMap = null;
 
         long stage1StartMs = perfStopwatch.ElapsedMilliseconds;
-        
-        ScoreArray relevancyScores = ExecuteRelevancyStage(searchText, ref bestSegmentsMap, coverageDepth, maxResults, ref tfidfMs, perfStopwatch);
+
+        // Execute Stage 1 (TF-IDF / Short Query) - Returns TopKHeap
+        TopKHeap relevancyScores = ExecuteRelevancyStage(searchText, ref bestSegmentsMap, coverageDepth, maxResults, ref tfidfMs, perfStopwatch);
 
         long consolidateStart = perfStopwatch.ElapsedMilliseconds;
+        ScoreEntry[] stage1Candidates = relevancyScores.GetTopK();
+        ScoreEntry[] stage1Results = SegmentProcessor.ConsolidateSegments(stage1Candidates, bestSegmentsMap);
 
-        // Always compute consolidated Stage 1 candidates so we can fall back if coverage
-        // decides there are no good lexical matches (e.g. typo-heavy queries like "battamam").
-        ScoreArray consolidatedStage1 = SegmentProcessor.ConsolidateSegments(relevancyScores, bestSegmentsMap);
-        ScoreEntry[] stage1Results = consolidatedStage1.GetAll();
         consolidateMs = perfStopwatch.ElapsedMilliseconds - consolidateStart;
 
         if (EnableDebugLogging)
@@ -106,29 +97,18 @@ internal sealed class SearchPipeline
                 string title = d?.IndexedText ?? "<null>";
                 if (title.Length > 120)
                     title = title[..117] + "...";
-                Console.WriteLine($"[PIPE]   S1[{i}] id={e.DocumentId} score={e.Score} tie={e.Tiebreaker} doc=\"{title}\"");
+                Console.WriteLine($"[PIPE]   S1[{i}] id={e.DocumentId} score={e.Score:F4} tie={e.Tiebreaker} doc=\"{title}\"");
             }
         }
-        
+
         long stage1TotalMs = perfStopwatch.ElapsedMilliseconds - stage1StartMs;
 
-        // Decide whether coverage should run.
-        // For general queries we use QueryAnalyzer.CanUseNGrams.
-        // For very short queries (1-3 chars) we additionally consult the positional
-        // prefix index and skip coverage if the prefix matches too many documents.
         bool isShortQuery = searchText.Length > 0 &&
                             searchText.Length <= ShortQueryMaxLength &&
                             (_vectorModel.Tokenizer.TokenizerSetup?.Delimiters ?? [' ']).All(d => !searchText.Contains(d));
 
-        // Two-step strategy for short queries: if the fast path already fills the
-        // requested number of results, skip the expensive coverage stage entirely.
         if (isShortQuery && stage1Results.Length >= maxResults && maxResults < int.MaxValue)
         {
-            if (EnableDebugLogging)
-            {
-                Console.WriteLine($"[DEBUG] Short-query fast path satisfied maxResults={maxResults}; skipping coverage.");
-            }
-
             if (stage1Results.Length > maxResults)
                 stage1Results = stage1Results[..maxResults];
 
@@ -174,53 +154,54 @@ internal sealed class SearchPipeline
             (!canUseNGrams && !allowShortQueryCoverage) ||
             skipCoverageDueToShortQueryDocCap)
         {
-            #if DEBUG
+#if DEBUG
             long overhead = stage1TotalMs - (tfidfMs + consolidateMs);
             Console.WriteLine($"[TIMING] total={perfStopwatch.ElapsedMilliseconds}ms (norm={normMs}ms, stage1={stage1TotalMs}ms [tfidf={tfidfMs}ms, consolidate={consolidateMs}ms, overhead={overhead}ms]) - NO COVERAGE");
             if (EnableDebugLogging)
             {
                 Console.WriteLine("[PIPE] Returning Stage1 results without coverage.");
             }
-            #endif
+#endif
             return stage1Results;
         }
 
         long coverageStartMs = perfStopwatch.ElapsedMilliseconds;
-            
+
         ScoreEntry[] coverageResults = ExecuteCoverageStage(
             searchText, coverageSetup, coverageDepth, maxResults,
-            relevancyScores, ref bestSegmentsMap,
+            stage1Results, ref bestSegmentsMap,
             ref topKMs, ref prescreenMs, ref wordMatcherCoverageMs, ref tfidfCoverageMs, ref truncationMs,
             perfStopwatch, tfidfMs);
-                
+
         long coverageTotalMs = perfStopwatch.ElapsedMilliseconds - coverageStartMs;
 
         // Safety net: if coverage returns no results but TF-IDF produced candidates,
         // fall back to the TF-IDF backbone instead of returning an empty result set.
         if (coverageResults.Length == 0 && stage1Results.Length > 0)
         {
-            #if DEBUG
+#if DEBUG
             if (EnableDebugLogging)
             {
                 Console.WriteLine("[DEBUG] Coverage produced 0 results; falling back to TF-IDF backbone results.");
             }
+
             long s1Overhead = stage1TotalMs - (tfidfMs + consolidateMs);
             long covOverhead = coverageTotalMs - (topKMs + prescreenMs + wordMatcherCoverageMs + tfidfCoverageMs + truncationMs);
             Console.WriteLine($"[TIMING] total={perfStopwatch.ElapsedMilliseconds}ms (norm={normMs}ms, stage1={stage1TotalMs}ms [tfidf={tfidfMs}ms, consolidate={consolidateMs}ms, oh={s1Overhead}ms], coverage={coverageTotalMs}ms [topK={topKMs}ms, prescreen={prescreenMs}ms, wmCov={wordMatcherCoverageMs}ms, tfidfCov={tfidfCoverageMs}ms, trunc={truncationMs}ms, oh={covOverhead}ms]) - FALLBACK");
-            #endif
+#endif
             return stage1Results;
         }
 
-        #if DEBUG
+#if DEBUG
         long overhead1 = stage1TotalMs - (tfidfMs + consolidateMs);
         long coverageOverhead = coverageTotalMs - (topKMs + prescreenMs + wordMatcherCoverageMs + tfidfCoverageMs + truncationMs);
         long totalOverhead = perfStopwatch.ElapsedMilliseconds - (stage1TotalMs + coverageTotalMs);
         Console.WriteLine($"[TIMING] total={perfStopwatch.ElapsedMilliseconds}ms (norm={normMs}ms, stage1={stage1TotalMs}ms [tfidf={tfidfMs}ms, consolidate={consolidateMs}ms, oh={overhead1}ms], coverage={coverageTotalMs}ms [topK={topKMs}ms, prescreen={prescreenMs}ms, wmCov={wordMatcherCoverageMs}ms, tfidfCov={tfidfCoverageMs}ms, trunc={truncationMs}ms, oh={coverageOverhead}ms], finalOH={totalOverhead}ms)");
-        #endif
+#endif
         return coverageResults;
     }
 
-        private ScoreArray ExecuteRelevancyStage(
+    private TopKHeap ExecuteRelevancyStage(
         string searchText,
         ref Dictionary<int, byte>? bestSegmentsMap,
         int coverageDepth,
@@ -232,14 +213,13 @@ internal sealed class SearchPipeline
         int minIndexSize = _vectorModel.Tokenizer.IndexSizes.Min();
         char[] delimiters = _vectorModel.Tokenizer.TokenizerSetup?.Delimiters ?? [' '];
 
-        var (canUseNGrams, hasMixedTerms, longWordsSearchText) = QueryAnalyzer.Analyze(searchText, _vectorModel.Tokenizer);
-        ScoreArray relevancyScores;
+        (bool canUseNGrams, bool hasMixedTerms, string longWordsSearchText) = QueryAnalyzer.Analyze(searchText, _vectorModel.Tokenizer);
+        TopKHeap relevancyScores;
 
         if (!canUseNGrams)
         {
             if (searchText.Length == 1)
             {
-                // Single-character query: principled two-step strategy.
                 // 1) Try the positional prefix index fast path via ShortQueryResolver.
                 //    If it can already supply at least maxResults candidates, we use it.
                 // 2) Otherwise, fall back to the original full scan so semantics are preserved.
@@ -254,25 +234,24 @@ internal sealed class SearchPipeline
 
                     if (_vectorModel.ShortQueryResolver.TryGetChampions(prefixSpan, maxResults, out ScoreEntry[] prefixResults))
                     {
-                        relevancyScores = new ScoreArray();
+                        relevancyScores = new TopKHeap(maxResults);
                         foreach (ScoreEntry entry in prefixResults)
                         {
-                            relevancyScores.Add(entry.DocumentId, entry.Score, entry.Tiebreaker);
+                            relevancyScores.Add(entry);
                         }
 
                         goto DoneRelevancy;
                     }
                 }
 
-                // Fallback: original single-character scan (contains-char-anywhere semantics).
                 ScoreEntry[] singleCharResults = ShortQueryProcessor.SearchSingleCharacter(
                     ch, bestSegmentsMap, queryIndex: 0, maxResults: maxResults,
                     _vectorModel.Documents.GetAllDocuments(), delimiters);
 
-                relevancyScores = new ScoreArray();
-                foreach (var entry in singleCharResults)
+                relevancyScores = new TopKHeap(maxResults);
+                foreach (ScoreEntry entry in singleCharResults)
                 {
-                    relevancyScores.Add(entry.DocumentId, entry.Score, entry.Tiebreaker);
+                    relevancyScores.Add(entry);
                 }
             }
             else
@@ -299,14 +278,14 @@ internal sealed class SearchPipeline
             relevancyScores = _vectorModel.SearchWithMaxScore(tfidfQuery, coverageDepth, bestSegmentsMap, queryIndex: 0);
         }
 
-    DoneRelevancy:
+        DoneRelevancy:
 
         if (perfStopwatch != null)
             tfidfMs = perfStopwatch.ElapsedMilliseconds - tfidfStart;
 
         if (EnableDebugLogging)
         {
-            Console.WriteLine($"[DEBUG] Stage1 TF-IDF: {relevancyScores.GetAll().Length} candidates");
+            Console.WriteLine($"[DEBUG] Stage1 TF-IDF: {relevancyScores.Count} candidates");
         }
 
         return relevancyScores;
@@ -317,7 +296,7 @@ internal sealed class SearchPipeline
         CoverageSetup coverageSetup,
         int coverageDepth,
         int maxResults,
-        ScoreArray relevancyScores,
+        ScoreEntry[] topCandidates, // Passed as array now
         ref Dictionary<int, byte>? bestSegmentsMap,
         ref long topKMs,
         ref long prescreenMs,
@@ -327,23 +306,13 @@ internal sealed class SearchPipeline
         Stopwatch? perfStopwatch,
         long tfidfMs)
     {
-        long topKStart = perfStopwatch?.ElapsedMilliseconds ?? 0;
-        ScoreEntry[] topCandidates = relevancyScores.GetTopK(coverageDepth);
-        if (perfStopwatch != null) topKMs = perfStopwatch.ElapsedMilliseconds - topKStart;
+        if (topCandidates.Length > coverageDepth)
+            topCandidates = topCandidates.Take(coverageDepth).ToArray();
 
         if (EnableDebugLogging)
         {
             Console.WriteLine($"[PIPE] Coverage stage for \"{searchText}\": topK={topCandidates.Length}, depth={coverageDepth}, maxResults={maxResults}");
             int logCount = Math.Min(5, topCandidates.Length);
-            for (int i = 0; i < logCount; i++)
-            {
-                ScoreEntry e = topCandidates[i];
-                Document? d = _vectorModel.Documents.GetDocumentByPublicKey(e.DocumentId);
-                string title = d?.IndexedText ?? "<null>";
-                if (title.Length > 120)
-                    title = title[..117] + "...";
-                Console.WriteLine($"[PIPE]   CAND[{i}] id={e.DocumentId} score={e.Score} tie={e.Tiebreaker} doc=\"{title}\"");
-            }
         }
 
         long prescreenStart = perfStopwatch?.ElapsedMilliseconds ?? 0;
@@ -353,6 +322,7 @@ internal sealed class SearchPipeline
                 searchText, topCandidates, _vectorModel.Tokenizer,
                 _vectorModel.TermCollection, _vectorModel.Documents, coverageSetup);
         }
+
         if (perfStopwatch != null) prescreenMs = perfStopwatch.ElapsedMilliseconds - prescreenStart;
 
         HashSet<int> wordMatcherInternalIds = WordMatcherLookup.Execute(
@@ -360,13 +330,7 @@ internal sealed class SearchPipeline
             _vectorModel.Tokenizer.TokenizerSetup?.Delimiters ?? [' '],
             EnableDebugLogging);
 
-        if (EnableDebugLogging)
-        {
-            Console.WriteLine($"[DEBUG] WordMatcher returned {wordMatcherInternalIds.Count} candidates for '{searchText}'");
-            Console.WriteLine($"[DEBUG] TF-IDF returned {topCandidates.Length} candidates");
-        }
-
-        var (uniqueDocKeys, documentKeyToIndex) = BuildDocumentKeyIndex(topCandidates, wordMatcherInternalIds);
+        (HashSet<long> uniqueDocKeys, Dictionary<long, int> documentKeyToIndex) = BuildDocumentKeyIndex(topCandidates, wordMatcherInternalIds);
 
         long lcsSpanPointer = 0;
         Span2D<byte> lcsAndWordHitsSpan = default;
@@ -378,16 +342,15 @@ internal sealed class SearchPipeline
 
         try
         {
-            ScoreArray finalScores = new ScoreArray();
+            TopKHeap finalScores = new TopKHeap(coverageDepth);
             int maxWordHits = 0;
             char[] delimiters = _vectorModel.Tokenizer.TokenizerSetup?.Delimiters ?? [' '];
             int minStemLength = _vectorModel.Tokenizer.IndexSizes.Min();
 
-            // Tokenize the query once per search and reuse across all candidate documents
             string[] queryTokens = searchText.Split(delimiters, StringSplitOptions.RemoveEmptyEntries);
 
             HashSet<int> tfidfInternalIds = BuildTfidfInternalIdSet(topCandidates);
-            var (wmOverlapping, wmUnique) = PartitionWordMatcherCandidates(wordMatcherInternalIds, tfidfInternalIds);
+            (List<int> wmOverlapping, List<int> wmUnique) = PartitionWordMatcherCandidates(wordMatcherInternalIds, tfidfInternalIds);
 
             int wmLimit = Math.Max(0, coverageDepth - wmOverlapping.Count);
             List<int> wmToProcess = wmOverlapping.Concat(wmUnique.Take(wmLimit)).ToList();
@@ -399,6 +362,7 @@ internal sealed class SearchPipeline
                     ref bestSegmentsMap, lcsAndWordHitsSpan, documentKeyToIndex,
                     finalScores, ref maxWordHits, delimiters, minStemLength);
             }
+
             if (perfStopwatch != null) wordMatcherCoverageMs = perfStopwatch.ElapsedMilliseconds - wmCoverageStart;
 
             long tfidfCoverageStart = perfStopwatch?.ElapsedMilliseconds ?? 0;
@@ -408,17 +372,21 @@ internal sealed class SearchPipeline
                 if (doc == null || doc.Deleted)
                     continue;
 
-                ProcessCandidate(doc.Id, searchText, queryTokens, coverageSetup, (float)candidate.Score / 255f,
+                float maxTfidf = topCandidates.Length > 0 ? topCandidates[0].Score : 1f;
+                float normBm25 = maxTfidf > 0 ? candidate.Score / maxTfidf : 0f;
+
+                ProcessCandidate(doc.Id, searchText, queryTokens, coverageSetup, normBm25,
                     ref bestSegmentsMap, lcsAndWordHitsSpan, documentKeyToIndex,
                     finalScores, ref maxWordHits, delimiters, minStemLength);
             }
+
             if (perfStopwatch != null) tfidfCoverageMs = perfStopwatch.ElapsedMilliseconds - tfidfCoverageStart;
 
             if (maxWordHits == 0 && wordMatcherInternalIds.Count == 0)
                 return [];
 
-            ScoreArray consolidatedFinalScores = SegmentProcessor.ConsolidateSegments(finalScores, bestSegmentsMap);
-            ScoreEntry[] finalResults = consolidatedFinalScores.GetTopK(coverageDepth);
+            ScoreEntry[] finalCandidates = finalScores.GetTopK();
+            ScoreEntry[] finalResults = SegmentProcessor.ConsolidateSegments(finalCandidates, bestSegmentsMap);
 
             int truncationIndex = -1;
             if (coverageSetup.Truncate && finalResults.Length > 0)
@@ -427,36 +395,14 @@ internal sealed class SearchPipeline
                 truncationIndex = ResultProcessor.CalculateTruncationIndex(
                     finalResults, maxWordHits, lcsAndWordHitsSpan, documentKeyToIndex, coverageSetup);
                 if (perfStopwatch != null) truncationMs = perfStopwatch.ElapsedMilliseconds - truncStart;
-
-                if (EnableDebugLogging)
-                    Console.WriteLine($"[TRUNC] finalResults.Length={finalResults.Length}, truncationIndex={truncationIndex}, maxWordHits={maxWordHits}");
             }
 
             int resultCount = (truncationIndex == -1 || !coverageSetup.Truncate)
                 ? maxResults
                 : Math.Min(Math.Max(0, truncationIndex) + 1, maxResults);
 
-            if (EnableDebugLogging)
-                Console.WriteLine($"[TRUNC] resultCount={resultCount} (truncIdx={truncationIndex}, maxResults={maxResults})");
-
             if (finalResults.Length > resultCount)
                 finalResults = finalResults.Take(resultCount).ToArray();
-
-            if (EnableDebugLogging)
-            {
-                Console.WriteLine("[DEBUG] Final fused results:");
-                foreach (ScoreEntry r in finalResults)
-                    Console.WriteLine($"  [DEBUG]   docKey={r.DocumentId}, score={r.Score}");
-
-                if (perfStopwatch != null)
-                {
-                    Console.WriteLine(
-                        $"[PERF] total={perfStopwatch.ElapsedMilliseconds}ms, " +
-                        $"tfidf={tfidfMs}ms, topK={topKMs}ms, " +
-                        $"wmCoverage={wordMatcherCoverageMs}ms, " +
-                        $"tfidfCoverage={tfidfCoverageMs}ms, truncation={truncationMs}ms");
-                }
-            }
 
             return finalResults;
         }
@@ -476,7 +422,7 @@ internal sealed class SearchPipeline
         ref Dictionary<int, byte>? bestSegmentsMap,
         Span2D<byte> lcsAndWordHitsSpan,
         Dictionary<long, int> documentKeyToIndex,
-        ScoreArray finalScores,
+        TopKHeap finalScores,
         ref int maxWordHits,
         char[] delimiters,
         int minStemLength)
@@ -491,8 +437,6 @@ internal sealed class SearchPipeline
         string docText = SegmentProcessor.GetBestSegmentText(
             doc, bestSegmentsMap, _vectorModel.Documents, _vectorModel.Tokenizer.TextNormalizer);
 
-        // For coverage and fusion, operate on the same canonical token space
-        // as indexing and query analysis.
         string coverageDocText = docText;
         string coverageQueryText = searchText;
         if (_synonymMap != null &&
@@ -520,7 +464,7 @@ internal sealed class SearchPipeline
         }
 
         CoverageFeatures features = _coverageEngine!.CalculateFeatures(coverageQueryText, coverageDocText, lcsFromSpan, internalId);
-        var (finalScore, tiebreaker) = FusionScorer.Calculate(
+        (float finalScore, byte tiebreaker) = FusionScorer.Calculate(
             coverageQueryText,
             coverageDocText,
             features,
@@ -532,11 +476,7 @@ internal sealed class SearchPipeline
             lcsAndWordHitsSpan[1, docIndex] = (byte)Math.Min(features.WordHits, 255);
 
         maxWordHits = Math.Max(maxWordHits, features.WordHits);
-
-        if (EnableDebugLogging)
-            Console.WriteLine($"[DEBUG] Coverage: docKey={doc.DocumentKey}, final={finalScore}, tie={tiebreaker}");
-
-        finalScores.Add(doc.DocumentKey, finalScore, tiebreaker);
+        finalScores.Add(new ScoreEntry(finalScore, doc.DocumentKey, tiebreaker));
     }
 
     private (HashSet<long> uniqueDocKeys, Dictionary<long, int> documentKeyToIndex) BuildDocumentKeyIndex(
@@ -571,6 +511,7 @@ internal sealed class SearchPipeline
             if (doc != null)
                 result.Add(doc.Id);
         }
+
         return result;
     }
 
@@ -591,10 +532,4 @@ internal sealed class SearchPipeline
 
         return (overlapping, unique);
     }
-    
-    // Synonym handling is now implemented via canonicalization at the tokenizer /
-    // indexing and query layers rather than query expansion here. The pipeline
-    // always sees a single canonical form per concept, which keeps coverage tiers
-    // and fusion scoring stable while still allowing equivalent surface forms.
 }
-

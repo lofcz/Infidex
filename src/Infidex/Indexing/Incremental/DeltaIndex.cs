@@ -175,12 +175,12 @@ internal sealed class DeltaIndex : IDisposable
     /// <summary>
     /// Finalizes the delta index (sorts posting lists, etc.).
     /// </summary>
-    public void Finalize()
+    public void Freeze()
     {
         _indexLock.EnterWriteLock();
         try
         {
-            _prefixIndex.Finalize();
+            _prefixIndex.Freeze();
         }
         finally
         {

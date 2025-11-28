@@ -292,7 +292,7 @@ public class SearchEngine : IDisposable
 
             return new Result(topResults, facets,
                 topResults.Length > 0 ? topResults.Length - 1 : 0,
-                topResults.Length > 0 ? topResults[^1].Score : (byte)0,
+                topResults.Length > 0 ? topResults[^1].Score : 0f,
                 false)
             { TotalCandidates = results.Length };
         }
@@ -322,7 +322,7 @@ public class SearchEngine : IDisposable
 
         return new Result(top, facets,
             top.Length > 0 ? top.Length - 1 : 0,
-            top.Length > 0 ? top[^1].Score : (byte)0,
+            top.Length > 0 ? top[^1].Score : 0f,
             false);
     }
 

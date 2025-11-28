@@ -26,7 +26,7 @@ public class Result
     /// <summary>
     /// Score of the last record in the result set (for pagination)
     /// </summary>
-    public ushort TruncationScore { get; set; }
+    public float TruncationScore { get; set; }
     
     /// <summary>
     /// Indicates if the query execution timed out
@@ -59,7 +59,7 @@ public class Result
     /// Creates a result with full metadata
     /// </summary>
     public Result(ScoreEntry[] records, Dictionary<string, KeyValuePair<string, int>[]>? facets, 
-                  int truncationIndex, ushort truncationScore, bool didTimeOut)
+                  int truncationIndex, float truncationScore, bool didTimeOut)
     {
         Records = records;
         Facets = facets;
@@ -80,7 +80,7 @@ public class Result
         ExecutionTimeMs = 0;
         DidTimeOut = false;
         TruncationIndex = records.Length > 0 ? records.Length - 1 : 0;
-        TruncationScore = records.Length > 0 ? records[^1].Score : (byte)0;
+        TruncationScore = records.Length > 0 ? records[^1].Score : 0f;
     }
     
     /// <summary>
@@ -88,8 +88,6 @@ public class Result
     /// </summary>
     public static Result MakeEmptyResult(bool timedOut = false)
     {
-        return new Result([], null, 0, 0, timedOut);
+        return new Result([], null, 0, 0f, timedOut);
     }
 }
-
-

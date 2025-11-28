@@ -111,8 +111,8 @@ internal sealed class ResultProcessor
 
             if (totalBoost > 0)
             {
-                ushort newScore = (ushort)Math.Min(65535, result.Score + totalBoost);
-                results[i] = new ScoreEntry(newScore, result.DocumentId);
+                float newScore = result.Score + totalBoost;
+                results[i] = new ScoreEntry(newScore, result.DocumentId, result.Tiebreaker, result.SegmentNumber);
             }
         }
 
@@ -167,7 +167,7 @@ internal sealed class ResultProcessor
 
             byte wordHitsByte = lcsAndWordHitsSpan[1, docIndex];
             byte lcsByte = lcsAndWordHitsSpan[0, docIndex];
-
+            
             if (wordHitsByte >= minWordHits || lcsByte > 0 || results[i].Score >= coverageSetup.TruncationScore)
             {
                 return i;
@@ -197,4 +197,3 @@ internal sealed class ResultProcessor
         return string.Compare(a.ToString(), b.ToString(), StringComparison.Ordinal);
     }
 }
-

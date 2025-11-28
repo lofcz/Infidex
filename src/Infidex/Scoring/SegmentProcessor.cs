@@ -1,5 +1,4 @@
 using Infidex.Core;
-using Infidex.Internalized.CommunityToolkit;
 using Infidex.Metrics;
 using Infidex.Tokenization;
 
@@ -13,35 +12,28 @@ internal static class SegmentProcessor
     /// <summary>
     /// Consolidates segment scores to return only the best-scoring segment per DocumentKey.
     /// </summary>
-    public static ScoreArray ConsolidateSegments(ScoreArray scores, Dictionary<int, byte>? bestSegmentsMap)
+    public static ScoreEntry[] ConsolidateSegments(IEnumerable<ScoreEntry> scores, Dictionary<int, byte>? bestSegmentsMap)
     {
-        ScoreArray consolidated = new ScoreArray();
-        Dictionary<long, (ushort Score, byte Tiebreaker)> scoresByKey = new Dictionary<long, (ushort Score, byte Tiebreaker)>();
+        Dictionary<long, ScoreEntry> bestByKey = new Dictionary<long, ScoreEntry>();
 
-        foreach (ScoreEntry entry in scores.GetAll())
+        foreach (ScoreEntry entry in scores)
         {
-            long docKey = entry.DocumentId;
-
-            if (!scoresByKey.TryGetValue(docKey, out (ushort Score, byte Tiebreaker) existing))
+            if (!bestByKey.TryGetValue(entry.DocumentId, out ScoreEntry existing))
             {
-                scoresByKey[docKey] = (entry.Score, entry.Tiebreaker);
+                bestByKey[entry.DocumentId] = entry;
             }
             else
             {
-                if (entry.Score > existing.Score ||
-                    (entry.Score == existing.Score && entry.Tiebreaker > existing.Tiebreaker))
+                if (entry.CompareTo(existing) > 0)
                 {
-                    scoresByKey[docKey] = (entry.Score, entry.Tiebreaker);
+                    bestByKey[entry.DocumentId] = entry;
                 }
             }
         }
 
-        foreach (KeyValuePair<long, (ushort Score, byte Tiebreaker)> kvp in scoresByKey)
-        {
-            consolidated.Add(kvp.Key, kvp.Value.Score, kvp.Value.Tiebreaker);
-        }
-
-        return consolidated;
+        ScoreEntry[] result = bestByKey.Values.ToArray();
+        Array.Sort(result, (a, b) => b.CompareTo(a)); // Descending sort
+        return result;
     }
 
     /// <summary>

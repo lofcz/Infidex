@@ -55,7 +55,7 @@ internal static class QueryAnalyzer
 
     public static bool CanUseNGrams(string searchText, Tokenizer tokenizer)
     {
-        var (canUseNGrams, _, _) = Analyze(searchText, tokenizer);
+        (bool canUseNGrams, _, _) = Analyze(searchText, tokenizer);
         return canUseNGrams;
     }
 }

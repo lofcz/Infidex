@@ -3,23 +3,40 @@ namespace Infidex.Core;
 /// <summary>
 /// Represents a search result entry with a score and document identifier.
 /// </summary>
-/// <param name="Score">Primary 16-bit score (precedence in high byte, semantic in low byte)</param>
-/// <param name="DocumentId">Document identifier</param>
-/// <param name="Tiebreaker">Secondary sort key for ordering within same Score (higher = better)</param>
-/// <param name="SegmentNumber">Optional segment number for multi-segment documents</param>
-public record ScoreEntry(ushort Score, long DocumentId, byte Tiebreaker = 0, int? SegmentNumber = null)
+public struct ScoreEntry : IComparable<ScoreEntry>
 {
-    /// <summary>
-    /// Combined 24-bit sort key: Score (16 bits) + Tiebreaker (8 bits).
-    /// Higher values sort first.
-    /// </summary>
-    public int SortKey => (Score << 8) | Tiebreaker;
-    
+    public float Score { get; set; }
+    public long DocumentId { get; set; }
+    public byte Tiebreaker { get; set; }
+    public int? SegmentNumber { get; set; }
+    public int MatchedTermCount { get; set; }
+    public int LongestSequence { get; set; }
+
+    public ScoreEntry(float score, long documentId, byte tiebreaker = 0, int? segmentNumber = null)
+    {
+        Score = score;
+        DocumentId = documentId;
+        Tiebreaker = tiebreaker;
+        SegmentNumber = segmentNumber;
+        MatchedTermCount = 0;
+        LongestSequence = 0;
+    }
+
+    public int CompareTo(ScoreEntry other)
+    {
+        // Primary: Score
+        int scoreCmp = Score.CompareTo(other.Score);
+        if (scoreCmp != 0) return scoreCmp;
+
+        // Secondary: Tiebreaker
+        int tieCmp = Tiebreaker.CompareTo(other.Tiebreaker);
+        return tieCmp != 0 ? tieCmp :
+            // Tertiary: DocumentId (Deterministic tie-breaking for stable sort)
+            other.DocumentId.CompareTo(DocumentId);
+    }
+
     public override string ToString()
     {
-        if (SegmentNumber.HasValue)
-            return $"Score: {Score}, DocId: {DocumentId}, Tie: {Tiebreaker}, Segment: {SegmentNumber.Value}";
-        return $"Score: {Score}, DocId: {DocumentId}, Tie: {Tiebreaker}";
+        return SegmentNumber.HasValue ? $"Score: {Score:F4}, DocId: {DocumentId}, Tie: {Tiebreaker}, Seg: {SegmentNumber.Value}" : $"Score: {Score:F4}, DocId: {DocumentId}, Tie: {Tiebreaker}";
     }
 }
-
