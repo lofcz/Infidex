@@ -1,0 +1,2 @@
+the code in this folder is adapted from https://github.com/equativ/Equativ.RoaringBitmaps
+licensed under the Apache License 2.0
