@@ -204,6 +204,22 @@ public class SearchEngine : IDisposable
         finally { _rwLock.ExitWriteLock(); }
     }
 
+    /// <summary>
+    /// Flushes the active in-memory segment to a disk segment.
+    /// </summary>
+    public void Flush(string segmentPath)
+    {
+        _rwLock.EnterWriteLock();
+        try
+        {
+            Status = SearchEngineStatus.Indexing;
+            _vectorModel.Flush(segmentPath);
+            _isIndexed = true; // Flushed state is indexed
+            Status = SearchEngineStatus.Ready;
+        }
+        finally { _rwLock.ExitWriteLock(); }
+    }
+
     public void CalculateWeights()
     {
         _rwLock.EnterWriteLock();

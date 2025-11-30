@@ -5,6 +5,7 @@ using Infidex.Indexing.Fst;
 using Infidex.Indexing.ShortQuery;
 using Infidex.Coverage;
 using Infidex.Synonyms;
+using Infidex.Indexing.Segments;
 
 namespace Infidex.Indexing;
 
@@ -13,7 +14,7 @@ namespace Infidex.Indexing;
 /// Uses FST-based term index and O(1) short query resolution.
 /// Thread-safe for concurrent searching.
 /// </summary>
-public class VectorModel
+public class VectorModel : IDisposable
 {
     private readonly Tokenizer _tokenizer;
     private readonly TermCollection _termCollection;
@@ -24,9 +25,6 @@ public class VectorModel
 
     private float[]? _docLengths;
     private float _avgDocLength;
-    private bool _impactOrderingApplied;
-    private int[]? _oldToNewDocId;
-    private int[]? _newToOldDocId;
     
     // FST-based indexes
     private FstIndex? _fstIndex;
@@ -35,16 +33,18 @@ public class VectorModel
     private ShortQueryResolver? _shortQueryResolver;
     private DocumentMetadataCache? _documentMetadataCache;
     
-    // Word-level IDF cache: maps normalized word tokens to their IDF values.
-    // Built once during indexing to provide clean, token-level discriminative
-    // power measurements for coverage scoring without n-gram approximation.
+    // Segments
+    private readonly List<SegmentReader> _segments = new List<SegmentReader>();
+    private readonly List<int> _segmentDocBases = new List<int>(); 
+    private int _flushedDocCount = 0; 
+
+    // Word-level IDF cache
     private Dictionary<string, float>? _wordIdfCache;
 
     public Tokenizer Tokenizer => _tokenizer;
     public DocumentCollection Documents => _documents;
     public TermCollection TermCollection => _termCollection;
     
-    // Index accessors
     internal FstIndex? FstIndex => _fstIndex;
     internal PositionalPrefixIndex? ShortQueryIndex => _shortQueryIndex;
     internal ShortQueryResolver? ShortQueryResolver => _shortQueryResolver;
@@ -62,11 +62,7 @@ public class VectorModel
         _documents = new DocumentCollection();
         _fieldWeights = fieldWeights ?? ConfigurationParameters.DefaultFieldWeights;
         _synonymMap = synonymMap;
-        
-        // Initialize FST builder
         _fstBuilder = new FstBuilder();
-        
-        // Initialize short query index
         char[] delimiters = tokenizer.TokenizerSetup?.Delimiters ?? [' '];
         _shortQueryIndex = new PositionalPrefixIndex(delimiters: delimiters);
     }
@@ -79,13 +75,8 @@ public class VectorModel
         (ushort Position, byte WeightIndex)[] fieldBoundaries =
             document.Fields.GetSearchableTexts('§', out string concatenatedText);
 
-        // Preserve the original concatenated text (including casing and formatting)
-        // for external consumption and parity tests.
         doc.IndexedText = concatenatedText;
 
-        // Internal indexing text is normalized, lowercased and optionally
-        // canonicalized for synonym equivalence. This text is used only for
-        // n-gram indexing and short-query structures, not for user-visible fields.
         string indexText = concatenatedText;
         if (_tokenizer.TextNormalizer != null)
         {
@@ -107,14 +98,12 @@ public class VectorModel
             
             if (isNewTerm)
             {
-                // Add to FST builder
                 _fstBuilder?.AddForwardOnly(shingle.Text, _termCollection.Count - 1);
             }
             
             term.FirstCycleAdd(doc.Id, _stopTermLimit, removeDuplicates: isSegmentContinuation, fieldWeight);
         }
         
-        // Index for short query resolution (also using canonicalized text)
         _shortQueryIndex?.IndexDocument(indexText, doc.Id);
 
         return doc;
@@ -122,8 +111,7 @@ public class VectorModel
 
     private float DetermineFieldWeight(int tokenPosition, (ushort Position, byte WeightIndex)[] fieldBoundaries)
     {
-        if (fieldBoundaries.Length == 0)
-            return 1.0f;
+        if (fieldBoundaries.Length == 0) return 1.0f;
 
         byte weightIndex = 0;
         for (int i = 0; i < fieldBoundaries.Length; i++)
@@ -153,7 +141,6 @@ public class VectorModel
         int workerCount = Math.Max(1, Environment.ProcessorCount);
         int chunkSize = (totalTerms + workerCount - 1) / workerCount;
 
-        // Each worker gets its own local vector of document lengths to avoid contention.
         float[][] localDocLengths = new float[workerCount][];
         int processedTerms = 0;
 
@@ -182,14 +169,12 @@ public class VectorModel
                 }
 
                 Term? term = _termCollection.GetTermByIndex(termIndex);
-                if (term == null)
-                    continue;
+                if (term == null) continue;
 
                 List<int>? docIds = term.GetDocumentIds();
                 List<byte>? weights = term.GetWeights();
 
-                if (docIds == null || weights == null)
-                    continue;
+                if (docIds == null || weights == null) continue;
 
                 int postings = docIds.Count;
                 for (int i = 0; i < postings; i++)
@@ -210,7 +195,6 @@ public class VectorModel
             localDocLengths[workerIndex] = local;
         });
 
-        // Aggregate local vectors into the final document length array.
         for (int d = 0; d < totalDocs; d++)
         {
             float sum = 0f;
@@ -229,9 +213,7 @@ public class VectorModel
 
         _avgDocLength = totalDocs > 0 ? totalLength / totalDocs : 0f;
         
-        // Build word-level IDF cache for clean discriminative power measurements
         BuildWordIdfCache();
-        
         ProgressChanged?.Invoke(this, 100);
     }
 
@@ -254,14 +236,8 @@ public class VectorModel
             terms[i].AddForFastInsert(weights[i], documentIndex);
     }
     
-    /// <summary>
-    /// Builds all optimized indexes (FST, short query, document metadata cache).
-    /// Call after all documents have been indexed.
-    /// </summary>
     public void BuildOptimizedIndexes()
     {
-        // Build FST from the current term collection if it is not already available
-        // (e.g., after a load from persistence).
         if (_fstIndex == null && _termCollection.Count > 0)
         {
             FstBuilder builder = new FstBuilder();
@@ -273,28 +249,19 @@ public class VectorModel
                     builder.Add(term.Text, i);
                 }
             }
-
             _fstIndex = builder.Build();
         }
         
-        // Finalize the short-query positional prefix index and create resolver.
         if (_shortQueryIndex != null)
         {
             _shortQueryIndex.Freeze();
-            
             char[] delimiters = _tokenizer.TokenizerSetup?.Delimiters ?? [' '];
             _shortQueryResolver = new ShortQueryResolver(_shortQueryIndex, _documents, delimiters);
         }
         
-        // Build document metadata cache for fusion signal optimization
         BuildDocumentMetadataCache();
     }
     
-    /// <summary>
-    /// Builds the document metadata cache by tokenizing each document and extracting
-    /// first token and token count. This is done once at index time to avoid repeated
-    /// tokenization during scoring.
-    /// </summary>
     private void BuildDocumentMetadataCache()
     {
         _documentMetadataCache = new DocumentMetadataCache(_documents.Count);
@@ -313,8 +280,6 @@ public class VectorModel
                 return;
             }
             
-            // Use the same normalization pipeline as search: lowercase, optional
-            // text normalization, and synonym canonicalization when configured.
             string text = doc.IndexedText.ToLowerInvariant();
             ReadOnlySpan<char> textSpan = text.AsSpan();
 
@@ -330,18 +295,15 @@ public class VectorModel
                 textSpan = text.AsSpan();
             }
             
-            // Tokenize to find first token and count tokens
             string firstToken = string.Empty;
             ushort tokenCount = 0;
             int i = 0;
             
-            // Skip leading delimiters
             while (i < textSpan.Length && delimiterSet.Contains(textSpan[i]))
                 i++;
             
             while (i < textSpan.Length && tokenCount < ushort.MaxValue)
             {
-                // Find end of current token
                 int tokenStart = i;
                 while (i < textSpan.Length && !delimiterSet.Contains(textSpan[i]))
                     i++;
@@ -352,13 +314,11 @@ public class VectorModel
                 {
                     if (tokenCount == 0)
                     {
-                        // Capture first token
                         firstToken = textSpan.Slice(tokenStart, tokenLength).ToString();
                     }
                     tokenCount++;
                 }
                 
-                // Skip delimiters to next token
                 while (i < textSpan.Length && delimiterSet.Contains(textSpan[i]))
                     i++;
             }
@@ -367,18 +327,11 @@ public class VectorModel
         });
     }
     
-    /// <summary>
-    /// Gets terms by prefix using the FST index.
-    /// Returns term IDs (outputs) that can be used to look up Term objects.
-    /// </summary>
     public void GetTermsByPrefix(string prefix, List<int> termIds)
     {
         _fstIndex?.GetByPrefix(prefix.AsSpan(), termIds);
     }
     
-    /// <summary>
-    /// Checks if any term starts with the given prefix.
-    /// </summary>
     public bool HasTermPrefix(string prefix)
     {
         return _fstIndex?.HasPrefix(prefix.AsSpan()) ?? false;
@@ -390,46 +343,170 @@ public class VectorModel
     internal TopKHeap SearchWithMaxScore(string queryText, int topK, Dictionary<int, byte>? bestSegmentsMap = null, int queryIndex = 0)
     {
         Shingle[] queryShingles = _tokenizer.TokenizeForSearch(queryText, out _, false);
-
-        List<Term> queryTerms = [];
-        foreach (Shingle shingle in queryShingles)
-        {
-            Term? term = _termCollection.GetTerm(shingle.Text);
-            if (term != null && term.DocumentFrequency <= _stopTermLimit)
-            {
-                term.QueryOccurrences = (byte)shingle.Occurrences;
-                queryTerms.Add(term);
-            }
-            else if (term == null && _fstIndex != null && shingle.Text.Length >= 4)
-            {
-                ExpandMissingTerm(shingle, queryTerms);
-            }
-        }
-
-        if (queryTerms.Count == 0 || _documents.Count == 0)
-            return new TopKHeap(topK);
-
         int totalDocs = _documents.Count;
+
         if (_docLengths == null || _docLengths.Length != totalDocs || _avgDocLength <= 0f)
             BuildInvertedLists(cancellationToken: CancellationToken.None);
 
-        return Bm25Scorer.Search(queryTerms, topK, totalDocs, _docLengths!, _avgDocLength, _stopTermLimit, _documents, bestSegmentsMap, queryIndex, _shortQueryIndex, queryText);
-    }
-
-    private void ExpandMissingTerm(Shingle shingle, List<Term> queryTerms)
-    {
-        // Fuzzy fallback for missing terms (Edit Distance 1 only)
-        List<int> fuzzyOutputs = new List<int>();
-        _fstIndex!.GetWithinEditDistance1(shingle.Text.AsSpan(), fuzzyOutputs);
+        var termInfos = new Dictionary<string, (int GlobalDf, byte QueryOccurrences)>();
         
-        foreach (int termId in fuzzyOutputs)
+        foreach (Shingle shingle in queryShingles)
         {
-            Term? fuzzyTerm = _termCollection.GetTermByIndex(termId);
-            if (fuzzyTerm != null && fuzzyTerm.DocumentFrequency <= _stopTermLimit)
+            GatherTermInfo(shingle.Text, (byte)shingle.Occurrences, termInfos);
+            if (termInfos[shingle.Text].GlobalDf == 0 && shingle.Text.Length >= 4)
             {
-                queryTerms.Add(fuzzyTerm);
+                ExpandMissingTerm(shingle, termInfos);
             }
         }
+
+        List<Bm25Scorer.TermScoreInfo> activeTermInfos = new List<Bm25Scorer.TermScoreInfo>();
+        List<List<Bm25Scorer.TermScoreInfo>> segmentTermInfos = new List<List<Bm25Scorer.TermScoreInfo>>(_segments.Count);
+        for(int i=0; i<_segments.Count; i++) segmentTermInfos.Add(new List<Bm25Scorer.TermScoreInfo>());
+
+        float avgdl = _avgDocLength > 0f ? _avgDocLength : 1f;
+
+        foreach (var kvp in termInfos)
+        {
+            string text = kvp.Key;
+            int df = kvp.Value.GlobalDf;
+            byte queryOcc = kvp.Value.QueryOccurrences;
+
+            if (df <= 0 || df > _stopTermLimit) continue;
+
+            float idf = Bm25Scorer.ComputeIdf(totalDocs, df);
+            
+            float maxTf = 255f;
+            float k1 = 1.2f;
+            float b = 0.75f;
+            float delta = 1.0f;
+            float minDlNorm = 1f - b + b * (1f / avgdl);
+            float maxBm25Core = (maxTf * (k1 + 1f)) / (maxTf + k1 * minDlNorm);
+            float maxScore = idf * (maxBm25Core + delta);
+
+            Term? activeTerm = _termCollection.GetTerm(text);
+            if (activeTerm != null)
+            {
+                activeTerm.QueryOccurrences = queryOcc;
+                activeTermInfos.Add(new Bm25Scorer.TermScoreInfo(activeTerm, idf, maxScore));
+            }
+
+            for (int i = 0; i < _segments.Count; i++)
+            {
+                var segReader = _segments[i];
+                int docBase = _segmentDocBases[i];
+                
+                var postingsEnum = segReader.GetPostingsEnum(text, docBase);
+                if (postingsEnum != null)
+                {
+                    var segTerm = new Term(text);
+                    int segDf = (int)postingsEnum.Cost();
+                    segTerm.SetSegmentSource(segReader, docBase, segDf);
+                    segmentTermInfos[i].Add(new Bm25Scorer.TermScoreInfo(segTerm, idf, maxScore));
+                }
+            }
+        }
+
+        TopKHeap resultHeap = Bm25Scorer.Search(
+            activeTermInfos.ToArray(), 
+            topK, totalDocs, _docLengths!, _avgDocLength, _stopTermLimit, _documents, bestSegmentsMap, queryIndex, _shortQueryIndex, queryText);
+
+        for (int i = 0; i < _segments.Count; i++)
+        {
+            if (segmentTermInfos[i].Count == 0) continue;
+
+            TopKHeap segHeap = Bm25Scorer.Search(
+                segmentTermInfos[i].ToArray(),
+                topK, totalDocs, _docLengths!, _avgDocLength, _stopTermLimit, _documents, bestSegmentsMap, queryIndex, _shortQueryIndex, queryText);
+            
+            foreach (var entry in segHeap.GetTopK())
+            {
+                resultHeap.Add(entry);
+            }
+        }
+
+        return resultHeap;
+    }
+
+    private void GatherTermInfo(string text, byte occurrences, Dictionary<string, (int GlobalDf, byte QueryOccurrences)> termInfos)
+    {
+        bool isNew = !termInfos.TryGetValue(text, out var info);
+        if (isNew)
+        {
+            info = (0, 0);
+        }
+
+        int newOcc = info.QueryOccurrences + occurrences;
+        info.QueryOccurrences = (byte)Math.Min(newOcc, 255);
+
+        if (isNew)
+        {
+            Term? activeTerm = _termCollection.GetTerm(text);
+            if (activeTerm != null)
+            {
+                info.GlobalDf += activeTerm.DocumentFrequency;
+            }
+
+            foreach (var segment in _segments)
+            {
+                var postings = segment.GetPostings(text);
+                if (postings != null)
+                {
+                    info.GlobalDf += postings.Value.DocIds.Length;
+                }
+            }
+        }
+
+        termInfos[text] = info;
+    }
+
+    private void ExpandMissingTerm(Shingle shingle, Dictionary<string, (int GlobalDf, byte QueryOccurrences)> termInfos)
+    {
+        List<(string Term, int Output)> fuzzyMatches = new List<(string Term, int Output)>();
+        
+        if (_fstIndex != null)
+        {
+            _fstIndex.GetWithinEditDistance1WithTerms(shingle.Text.AsSpan(), fuzzyMatches);
+        }
+        
+        foreach (var segment in _segments)
+        {
+            if (segment.FstIndex != null)
+            {
+                segment.FstIndex.GetWithinEditDistance1WithTerms(shingle.Text.AsSpan(), fuzzyMatches);
+            }
+        }
+        
+        foreach (var match in fuzzyMatches)
+        {
+            if (!termInfos.ContainsKey(match.Term))
+            {
+                GatherTermInfo(match.Term, (byte)shingle.Occurrences, termInfos);
+            }
+        }
+    }
+
+    public void Flush(string segmentPath)
+    {
+        if (_termCollection.Count == 0) return;
+
+        var writer = new SegmentWriter();
+        writer.WriteSegment(_termCollection, _documents.Count - _flushedDocCount, _flushedDocCount, segmentPath);
+
+        var reader = new SegmentReader(segmentPath);
+        _segments.Add(reader);
+        _segmentDocBases.Add(_flushedDocCount);
+
+        _flushedDocCount = _documents.Count;
+
+        _termCollection.ClearAllData();
+        _fstBuilder = new FstBuilder();
+        _fstIndex = null;
+    }
+
+    public void Dispose()
+    {
+        foreach(var seg in _segments) seg.Dispose();
+        _segments.Clear();
     }
 
     public void Save(string filePath)
@@ -461,20 +538,13 @@ public class VectorModel
         VectorModelPersistence.LoadFromStream(reader, _documents, _termCollection, _stopTermLimit, 
             out _fstIndex, out _shortQueryIndex, out _documentMetadataCache);
         
-        // Create resolver if short query index was loaded
         if (_shortQueryIndex != null)
         {
             char[] delimiters = _tokenizer.TokenizerSetup?.Delimiters ?? [' '];
             _shortQueryResolver = new ShortQueryResolver(_shortQueryIndex, _documents, delimiters);
         }
-        
     }
     
-    /// <summary>
-    /// Builds a word-level IDF cache by tokenizing all documents and computing
-    /// document frequency per word token. This provides clean, token-level
-    /// discriminative power for coverage scoring without n-gram approximations.
-    /// </summary>
     private void BuildWordIdfCache()
     {
         int totalDocs = _documents.Count;
@@ -485,8 +555,6 @@ public class VectorModel
         }
         
         char[] delimiters = _tokenizer.TokenizerSetup?.Delimiters ?? [' '];
-        
-        // Count document frequency for each word
         Dictionary<string, int> wordDocFreq = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
         
         for (int docId = 0; docId < totalDocs; docId++)
@@ -495,7 +563,6 @@ public class VectorModel
             if (doc == null || doc.Deleted || string.IsNullOrEmpty(doc.IndexedText))
                 continue;
             
-            // Tokenize and normalize (same as coverage will do at query time)
             string normalized = doc.IndexedText.ToLowerInvariant();
             if (_tokenizer.TextNormalizer != null)
             {
@@ -514,7 +581,6 @@ public class VectorModel
             }
         }
         
-        // Compute IDF for each word
         _wordIdfCache = new Dictionary<string, float>(wordDocFreq.Count, StringComparer.OrdinalIgnoreCase);
         foreach (var (word, df) in wordDocFreq)
         {

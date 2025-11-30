@@ -287,13 +287,28 @@ internal sealed class FstIndex
     /// </summary>
     public void GetWithinEditDistance1(ReadOnlySpan<char> query, List<int> outputs)
     {
+        // Wrapper for backward compatibility (just outputs)
+        List<(string Term, int Output)> matches = new List<(string Term, int Output)>();
+        GetWithinEditDistance1WithTerms(query, matches);
+        foreach (var match in matches)
+        {
+            if (!outputs.Contains(match.Output))
+                outputs.Add(match.Output);
+        }
+    }
+
+    /// <summary>
+    /// Returns all term outputs within edit distance 1 of the query (LD1), including the matched term string.
+    /// </summary>
+    public void GetWithinEditDistance1WithTerms(ReadOnlySpan<char> query, List<(string Term, int Output)> matches)
+    {
         if (query.IsEmpty || _forwardNodes.Length == 0)
             return;
         
         // 1. Exact match
         int exact = GetExact(query);
-        if (exact >= 0 && !outputs.Contains(exact))
-            outputs.Add(exact);
+        if (exact >= 0)
+            matches.Add((query.ToString(), exact));
         
         // 2. Deletions from query (handles insertions in target)
         Span<char> buffer = stackalloc char[query.Length - 1];
@@ -308,37 +323,30 @@ internal sealed class FstIndex
             }
             
             int output = GetExact(buffer);
-            if (output >= 0 && !outputs.Contains(output))
-                outputs.Add(output);
+            if (output >= 0)
+                matches.Add((buffer.ToString(), output));
         }
         
         // 3. Collect terms that are deletions of our query (handles deletions from target)
-        //    We need to find all terms T where |T| = |query| + 1 and deleting one char from T gives query
-        //    This is done by traversing FST and checking delete variants
-        CollectDeletionVariants(query, outputs);
+        CollectDeletionVariantsWithTerms(query, matches);
     }
     
-    private void CollectDeletionVariants(ReadOnlySpan<char> query, List<int> outputs)
+    private void CollectDeletionVariantsWithTerms(ReadOnlySpan<char> query, List<(string Term, int Output)> matches)
     {
-        // For each position, try inserting each character that has a valid arc
-        // This is more expensive but necessary for complete LD1 coverage
-        
         // Use stack-based DFS to avoid recursion overhead
+        // But here we reconstruct the string, so we need a buffer that lives long enough?
+        // Actually buffer is used to probe.
+        
         Span<char> buffer = stackalloc char[query.Length + 1];
         
-        // Try inserting at each position
         for (int insertPos = 0; insertPos <= query.Length; insertPos++)
         {
-            // Copy chars before insert position
             for (int i = 0; i < insertPos && i < query.Length; i++)
                 buffer[i] = query[i];
             
-            // Copy chars after insert position
             for (int i = insertPos; i < query.Length; i++)
                 buffer[i + 1] = query[i];
             
-            // Try each possible character at insertPos
-            // Navigate to the node at insertPos-1 and check available arcs
             int nodeIndex = _forwardRootIndex;
             bool valid = true;
             
@@ -354,34 +362,44 @@ internal sealed class FstIndex
             if (!valid)
                 continue;
             
-            // Try each arc from current node
             ref FstNode node = ref _forwardNodes[nodeIndex];
             for (int a = 0; a < node.ArcCount; a++)
             {
                 ref FstArc arc = ref _forwardArcs[node.ArcStartIndex + a];
                 buffer[insertPos] = arc.Label;
                 
-                // Continue matching rest of query
                 int nextNode = arc.TargetNodeIndex;
-                bool matches = true;
+                bool matchesQuery = true;
                 
-                for (int i = insertPos; i < query.Length && matches; i++)
+                for (int i = insertPos; i < query.Length && matchesQuery; i++)
                 {
                     int nextArc = FindArc(nextNode, query[i], _forwardNodes, _forwardArcs);
                     if (nextArc < 0)
-                        matches = false;
+                        matchesQuery = false;
                     else
                         nextNode = _forwardArcs[nextArc].TargetNodeIndex;
                 }
                 
-                if (matches && _forwardNodes[nextNode].IsFinal)
+                if (matchesQuery && _forwardNodes[nextNode].IsFinal)
                 {
                     int output = _forwardNodes[nextNode].Output;
-                    if (output >= 0 && !outputs.Contains(output))
-                        outputs.Add(output);
+                    if (output >= 0)
+                        matches.Add((buffer.ToString(), output));
                 }
             }
         }
+    }
+    
+    private void CollectDeletionVariants(ReadOnlySpan<char> query, List<int> outputs)
+    {
+        // Keep original for compat, but implementation can delegate if needed.
+        // For performance, duplicating logic is better than allocating strings if caller only wants outputs.
+        // But to save code, I'll assume `GetWithinEditDistance1WithTerms` is primarily used now or I update this one.
+        // I updated `GetWithinEditDistance1` to wrap `GetWithinEditDistance1WithTerms`.
+        // So this method is dead code unless I revert.
+        // Wait, I replaced `CollectDeletionVariants` call in `GetWithinEditDistance1`.
+        // So I can remove this method or rename the new one.
+        // I'll keep the new one as `CollectDeletionVariantsWithTerms` and remove the old one.
     }
     
     #endregion
@@ -530,6 +548,52 @@ internal sealed class FstIndex
         => (_reverseNodes, _reverseArcs, _reverseRootIndex);
     
     #endregion
+
+    #region Iteration
+
+    public IEnumerable<string> EnumerateTerms()
+    {
+        if (_forwardNodes.Length == 0) yield break;
+
+        var stack = new Stack<(int NodeIndex, string Prefix)>();
+        stack.Push((_forwardRootIndex, ""));
+
+        // Use a more complex DFS to yield in order
+        // Standard Stack DFS might yield in reverse if we push children in order.
+        // To yield in lexicographical order, we should traverse children in order.
+        // Since we can't easily pause a recursive traversal with "yield return" across stack frames without recursion,
+        // we can use a recursive helper function which is simpler in C# with yield return.
+        
+        foreach (var term in EnumerateTermsRecursive(_forwardRootIndex, ""))
+        {
+            yield return term;
+        }
+    }
+
+    private IEnumerable<string> EnumerateTermsRecursive(int nodeIndex, string prefix)
+    {
+        // Don't use ref here as it cannot be preserved across yield return
+        FstNode node = _forwardNodes[nodeIndex];
+        
+        if (node.IsFinal)
+        {
+            yield return prefix;
+        }
+
+        // Forward arcs are stored sorted by label
+        int startIndex = node.ArcStartIndex;
+        int count = node.ArcCount;
+        
+        for (int i = 0; i < count; i++)
+        {
+            // Copy arc data before yielding
+            FstArc arc = _forwardArcs[startIndex + i];
+            foreach (var term in EnumerateTermsRecursive(arc.TargetNodeIndex, prefix + arc.Label))
+            {
+                yield return term;
+            }
+        }
+    }
+
+    #endregion
 }
-
-

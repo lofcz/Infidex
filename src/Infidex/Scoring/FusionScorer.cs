@@ -8,7 +8,7 @@ namespace Infidex.Scoring;
 /// </summary>
 internal static class FusionScorer
 {
-    internal static bool EnableDebugLogging = false;
+    internal static bool EnableDebugLogging = true;
 
     private const float IntentBonusPerSignal = 0.15f;
 
@@ -211,7 +211,8 @@ internal static class FusionScorer
         // Final Score = Precedence (Integer) + Semantic (Fraction)
         float finalScore = (float)precedence + semantic;
         
-        if (EnableDebugLogging)
+        // currently not needed
+        if (false && EnableDebugLogging)
         {
             LogExplanation(
                 queryText,

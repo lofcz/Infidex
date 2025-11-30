@@ -8,6 +8,7 @@ class Program
     {
         ExampleMode mode = GetModeFromArgs(args);
         int? dataset = GetDatasetFromArgs(args);
+        
         if (dataset.HasValue)
         {
             switch (dataset.Value)
@@ -23,6 +24,8 @@ class Program
                     return;
             }
         }
+        
+        
 
         while (true)
         {
