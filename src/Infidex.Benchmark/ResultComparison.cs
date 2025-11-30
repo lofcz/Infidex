@@ -88,7 +88,10 @@ public static class ResultComparison
         // Test queries
         string[] testQueries = 
         {
-            "redeption sh"
+            "redeption sh",
+            "shaaawshank",
+            "shaa awashank",
+            "redeption"
         };
         
         foreach (var queryText in testQueries)
@@ -99,7 +102,10 @@ public static class ResultComparison
             
             // Infidex results
             Console.WriteLine("--- INFIDEX RESULTS (Top 5) ---");
+            var sw = System.Diagnostics.Stopwatch.StartNew();
             var infidexResults = infidexEngine.Search(new Infidex.Api.Query(queryText, 5));
+            sw.Stop();
+            Console.WriteLine($"Search took: {sw.Elapsed.TotalMilliseconds:F2} ms");
             foreach (var result in infidexResults.Records.Take(5))
             {
                 var doc = infidexEngine.GetDocument(result.DocumentId);
@@ -157,4 +163,3 @@ public static class ResultComparison
         luceneDirectory.Dispose();
     }
 }
-

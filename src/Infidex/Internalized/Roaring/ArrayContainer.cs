@@ -6,6 +6,8 @@ internal class ArrayContainer : Container, IEquatable<ArrayContainer>
     private readonly ushort[] _content;
     private readonly int _cardinality;
 
+    internal ushort[] Content => _content;
+
     static ArrayContainer()
     {
         ushort[] data = new ushort[MaxSize];

@@ -14,6 +14,8 @@ internal readonly struct NGramKey : IEquatable<NGramKey>
     //  bits 48-63  : char2
     private readonly ulong _packed;
 
+    public ulong Value => _packed;
+
     public NGramKey(ReadOnlySpan<char> span)
     {
         if ((uint)span.Length is < 2 or > 3)
@@ -85,5 +87,3 @@ internal readonly struct NGramKey : IEquatable<NGramKey>
     public static bool operator ==(NGramKey left, NGramKey right) => left.Equals(right);
     public static bool operator !=(NGramKey left, NGramKey right) => !left.Equals(right);
 }
-
-

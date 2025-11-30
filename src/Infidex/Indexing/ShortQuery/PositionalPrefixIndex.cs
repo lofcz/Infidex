@@ -132,6 +132,7 @@ internal sealed class PositionalPrefixIndex
             {
                 list.Sort();
                 list.Compact();
+                list.BuildDocSet();
             }
         }
         
@@ -140,6 +141,7 @@ internal sealed class PositionalPrefixIndex
         {
             list.Sort();
             list.Compact();
+            list.BuildDocSet();
         }
     }
     
@@ -294,5 +296,3 @@ internal sealed class PositionalPrefixIndex
     
     #endregion
 }
-
-

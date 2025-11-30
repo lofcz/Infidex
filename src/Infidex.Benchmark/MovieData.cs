@@ -34,10 +34,30 @@ public static class MovieData
         var config = new CsvConfiguration(CultureInfo.InvariantCulture)
         {
             PrepareHeaderForMatch = args => args.Header.ToLower(),
-            MissingFieldFound = null // Ignore missing fields
+            MissingFieldFound = null, // Ignore missing fields
+            HeaderValidated = null // Ignore missing headers
         };
 
-        string filePath = Path.Combine(AppContext.BaseDirectory, "movies.csv");
+        string filePath = Path.Combine(AppContext.BaseDirectory, "movies1M.csv");
+        
+        // Try to find 1M dataset
+        string[] possiblePaths = 
+        {
+            Path.Combine(AppContext.BaseDirectory, "../../../../src/Infidex.Tests/movies1M.csv"),
+            Path.Combine(AppContext.BaseDirectory, "../../../../src/Infidex.Example/movies.csv"),
+            filePath
+        };
+        
+        foreach (var path in possiblePaths)
+        {
+            if (File.Exists(path))
+            {
+                filePath = path;
+                Console.WriteLine($"Loading movies from: {filePath}");
+                break;
+            }
+        }
+        
         using (var reader = new StreamReader(filePath))
         using (var csv = new CsvReader(reader, config))
         {
@@ -47,4 +67,3 @@ public static class MovieData
         return _cachedMovies;
     }
 }
-

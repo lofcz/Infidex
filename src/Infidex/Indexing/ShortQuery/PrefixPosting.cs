@@ -1,4 +1,6 @@
 using System.Runtime.InteropServices;
+using Infidex.Utilities;
+using Infidex.Internalized.Roaring;
 
 namespace Infidex.Indexing.ShortQuery;
 
@@ -44,12 +46,22 @@ internal sealed class PrefixPostingList
     private PrefixPosting[] _postings;
     private int _count;
     private bool _sorted;
+
+    // Optional sparse bitset for fast cardinality checks and iteration.
+    // Contains unique document IDs for postings where (Position == 0 || IsWordStart).
+    private RoaringBitmap? _docSet;
     
     /// <summary>Number of postings in the list.</summary>
     public int Count => _count;
     
     /// <summary>Gets the underlying postings span.</summary>
     public ReadOnlySpan<PrefixPosting> Postings => _postings.AsSpan(0, _count);
+
+    /// <summary>
+    /// Optional sparse bitset of unique document IDs for word-start or first-position matches.
+    /// Built during index finalization (Freeze/Read) for fast prefix candidate selection.
+    /// </summary>
+    public RoaringBitmap? DocSet => _docSet;
     
     public PrefixPostingList(int initialCapacity = 16)
     {
@@ -88,6 +100,40 @@ internal sealed class PrefixPostingList
     {
         if (_postings.Length > _count)
             Array.Resize(ref _postings, _count);
+    }
+
+    /// <summary>
+    /// Builds the doc-level sparse bitset for fast candidate selection.
+    /// Includes unique document IDs where (Position == 0 || IsWordStart).
+    /// </summary>
+    public void BuildDocSet()
+    {
+        if (_count == 0)
+        {
+            _docSet = null;
+            return;
+        }
+
+        if (!_sorted)
+            Sort();
+
+        List<int> docs = new List<int>();
+        int lastDocId = -1;
+
+        for (int i = 0; i < _count; i++)
+        {
+            PrefixPosting p = _postings[i];
+            if (!(p.Position == 0 || p.IsWordStart))
+                continue;
+
+            if (p.DocumentId == lastDocId)
+                continue;
+
+            docs.Add(p.DocumentId);
+            lastDocId = p.DocumentId;
+        }
+
+        _docSet = docs.Count == 0 ? null : RoaringBitmap.CreateFromSorted(docs);
     }
     
     /// <summary>
@@ -206,10 +252,9 @@ internal sealed class PrefixPostingList
         
         list._count = count;
         list._sorted = true;
+        list.BuildDocSet();
         return list;
     }
     
     #endregion
 }
-
-

@@ -10,6 +10,8 @@ internal class BitmapContainer : Container, IEquatable<BitmapContainer>
     private readonly ulong[] _bitmap;
     private readonly int _cardinality;
 
+    internal ulong[] Bitmap => _bitmap;
+
     static BitmapContainer()
     {
         ulong[] data = GC.AllocateUninitializedArray<ulong>(BitmapLength);

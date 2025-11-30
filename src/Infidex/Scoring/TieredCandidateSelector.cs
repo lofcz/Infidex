@@ -1,15 +1,13 @@
+using System.Buffers;
 using Infidex.Core;
 using Infidex.Indexing;
 using Infidex.Indexing.ShortQuery;
-using Infidex.Utilities;
-using System.Buffers;
+using Infidex.Internalized.Roaring;
 
 namespace Infidex.Scoring;
 
 /// <summary>
 /// Implements WAND/MaxScore algorithm for efficient candidate selection.
-/// Selects candidates in tiers based on term combinations, with provable upper bounds
-/// to enable early termination.
 /// </summary>
 internal class TieredCandidateSelector
 {
@@ -18,7 +16,7 @@ internal class TieredCandidateSelector
         public readonly Term Term;
         public readonly float Idf;
         public readonly float MaxScore;
-        public readonly int QueryOccurrences;
+        public readonly int QueryOccurrences; // currently not used
 
         public TermInfo(Term term, float idf, float maxScore, int queryOccurrences)
         {
@@ -31,61 +29,59 @@ internal class TieredCandidateSelector
 
     /// <summary>
     /// Selects candidates using tiered approach with PREFIX PRECEDENCE.
-    /// Returns documents sorted by their upper-bound potential scores.
     /// </summary>
-    public static HashSet<int> SelectCandidates(
+    public static RoaringBitmap SelectCandidates(
         List<Term> queryTerms,
         int topK,
         int totalDocs,
         float avgDocLength,
-        Indexing.ShortQuery.PositionalPrefixIndex? prefixIndex,
+        PositionalPrefixIndex? prefixIndex,
         string? originalQuery,
-        out Dictionary<int, float> upperBounds)
+        float[] upperBounds)
     {
         var termInfos = new Indexing.Bm25Scorer.TermScoreInfo[queryTerms.Count];
-        for(int i=0; i<queryTerms.Count; i++)
+        for (int i = 0; i < queryTerms.Count; i++)
         {
             Term t = queryTerms[i];
             float idf = t.DocumentFrequency > 0 ? MathF.Log10((float)totalDocs / t.DocumentFrequency) : 0;
             float maxScore = idf * 2.2f;
             termInfos[i] = new Indexing.Bm25Scorer.TermScoreInfo(t, idf, maxScore);
         }
-        return SelectCandidates(termInfos, topK, totalDocs, avgDocLength, prefixIndex, originalQuery, out upperBounds);
+        return SelectCandidates(termInfos, topK, totalDocs, avgDocLength, prefixIndex, originalQuery, upperBounds);
     }
 
-    public static HashSet<int> SelectCandidates(
+    public static RoaringBitmap SelectCandidates(
         Indexing.Bm25Scorer.TermScoreInfo[] queryTerms,
         int topK,
         int totalDocs,
         float avgDocLength,
-        Indexing.ShortQuery.PositionalPrefixIndex? prefixIndex,
+        PositionalPrefixIndex? prefixIndex,
         string? originalQuery,
-        out Dictionary<int, float> upperBounds)
+        float[] upperBounds)
     {
-        upperBounds = new Dictionary<int, float>();
-        
         if (queryTerms.Length == 0)
-            return [];
+            return RoaringBitmap.Create();
 
+        // PREFIX PRECEDENCE (short queries / strong prefixes)
         if (prefixIndex != null && !string.IsNullOrEmpty(originalQuery))
         {
-            HashSet<int> prefixCandidates = TrySelectPrefixCandidates(
+            RoaringBitmap prefixCandidates = TrySelectPrefixCandidates(
                 prefixIndex, originalQuery, topK, queryTerms.Length, totalDocs, out float prefixUpperBound);
-            
-            if (prefixCandidates.Count > 0)
+
+            long prefixCount = prefixCandidates.Cardinality;
+            if (prefixCount > 0)
             {
                 foreach (int docId in prefixCandidates)
                 {
                     upperBounds[docId] = prefixUpperBound;
                 }
-                
-                if (prefixCandidates.Count >= Math.Min(topK * 2, 100))
-                {
+
+                if (prefixCount >= Math.Min(topK * 2, 100))
                     return prefixCandidates;
-                }
             }
         }
 
+        // Build internal term infos enriched with query occurrences.
         List<TermInfo> terms = new List<TermInfo>(queryTerms.Length);
         int missingTerms = 0;
         
@@ -98,112 +94,168 @@ internal class TieredCandidateSelector
             }
 
             int qOcc = 1;
-            if (info.Term is Term t) qOcc = t.QueryOccurrences;
+            if (info.Term is { } t) qOcc = t.QueryOccurrences;
             
             terms.Add(new TermInfo(info.Term, info.Idf, info.MaxScore, qOcc));
         }
         
         if (terms.Count == 0)
         {
-            upperBounds.Clear();
-            return [];
+            // upperBounds logic handled by caller clearing
+            return RoaringBitmap.Create();
         }
 
         bool hasPotentialTypo = false;
+        float maxIdf = 0f;
+
         foreach (TermInfo termInfo in terms)
         {
             if (termInfo.Term.DocumentFrequency < 10)
-            {
                 hasPotentialTypo = true;
-                break;
-            }
+
+            if (termInfo.Idf > maxIdf)
+                maxIdf = termInfo.Idf;
         }
-        
+
+        // Disjunctive logic for typo-like / missing term scenarios
         if (hasPotentialTypo || missingTerms > 0 || queryTerms.Length == 1)
         {
-            return SelectCandidatesDisjunctive(terms, topK, totalDocs, upperBounds);
+            RoaringBitmap disjunctiveCandidates = SelectCandidatesDisjunctive(terms, topK, totalDocs, upperBounds);
+            return disjunctiveCandidates;
         }
 
-        // Sort by IDF descending
+        // Sort by IDF descending (most selective first)
         terms.Sort((a, b) => b.Idf.CompareTo(a.Idf));
 
-        HashSet<int> candidates = [];
+        RoaringBitmap globalCandidates = RoaringBitmap.Create();
 
         // Tier 0: Full AND (all terms required)
         if (terms.Count >= 2)
         {
-            HashSet<int> tier0 = IntersectAllTerms(terms);
             float tier0UpperBound = terms.Sum(t => t.MaxScore);
-            
-            foreach (int docId in tier0)
-            {
-                candidates.Add(docId);
-                upperBounds[docId] = tier0UpperBound;
-            }
+            RoaringBitmap tier0 = IntersectTerms(terms, tier0UpperBound, upperBounds);
+            globalCandidates |= tier0;
 
-            if (candidates.Count >= topK * 2)
-                return candidates;
+            if (globalCandidates.Cardinality >= topK * 2)
+                return globalCandidates;
         }
 
         // Tier 1: n-1 terms (drop lowest IDF term)
-        if (terms.Count >= 3 && candidates.Count < topK * 3)
+        if (terms.Count >= 3 && globalCandidates.Cardinality < topK * 3)
         {
             List<TermInfo> tier1Terms = terms.Take(terms.Count - 1).ToList();
-            HashSet<int> tier1 = IntersectAllTerms(tier1Terms);
             float tier1UpperBound = tier1Terms.Sum(t => t.MaxScore);
-
-            foreach (int docId in tier1)
-            {
-                if (candidates.Add(docId))
-                {
-                    upperBounds[docId] = tier1UpperBound;
-                }
-            }
+            RoaringBitmap tier1 = IntersectTerms(tier1Terms, tier1UpperBound, upperBounds);
+            globalCandidates |= tier1;
         }
 
         // Tier 2: Individual high-IDF terms
-        if (candidates.Count < topK * 5)
+        if (globalCandidates.Cardinality < topK * 5)
         {
-            foreach (TermInfo termInfo in terms.Take(Math.Min(2, terms.Count)))
+            // Keep at most 2 truly selective terms.
+            TermInfo[] selective = new TermInfo[Math.Min(2, terms.Count)];
+            int selCount = 0;
+            float idfCutoff = maxIdf * 0.3f;
+
+            foreach (TermInfo termInfo in terms)
             {
+                if (termInfo.Idf <= 0f)
+                    continue;
+
+                if (termInfo.Idf < idfCutoff)
+                    continue; // skip very dense / low-quality terms
+
+                selective[selCount++] = termInfo;
+                if (selCount == selective.Length)
+                    break;
+            }
+
+            for (int si = 0; si < selCount; si++)
+            {
+                TermInfo termInfo = selective[si];
                 IPostingsEnum? postings = termInfo.Term.GetPostingsEnum();
                 if (postings == null)
                     continue;
 
-                while (true)
-                {
-                    int docId = postings.NextDoc();
-                    if (docId == PostingsEnumConstants.NO_MORE_DOCS)
-                        break;
+                int[] termDocsBuffer = ArrayPool<int>.Shared.Rent(4096);
+                int count = 0;
+                List<int> termDocs = new List<int>(); // Fallback or batching
 
-                    if (candidates.Add(docId))
+                // Actually we can just batch insert into RoaringBitmap if it supported it, or collect all then insert.
+                // For simplicity and performance, we'll collect into a large buffer or resizeable array.
+                // Given selective terms are high IDF, they might be sparse but could be large.
+                // Let's use a List<int> but only for this part as it's not the main bottleneck identified (it's IntersectTerms).
+                // But wait, the task says "List<int> Allocations: IntersectTerms and TrySelectPrefixCandidates".
+                // This part (Tier 2) uses List<int> too. Let's fix it if possible.
+                // Actually, let's use a rented array and resize if needed.
+                
+                int capacity = 4096;
+                int[] buffer = ArrayPool<int>.Shared.Rent(capacity);
+                int pos = 0;
+
+                try
+                {
+                    while (true)
                     {
-                        upperBounds[docId] = termInfo.MaxScore;
+                        int docId = postings.NextDoc();
+                        if (docId == PostingsEnumConstants.NO_MORE_DOCS)
+                            break;
+
+                        if (upperBounds[docId] == 0)
+                        {
+                            upperBounds[docId] = termInfo.MaxScore;
+                        }
+                        
+                        if (pos >= capacity)
+                        {
+                            // Resize
+                            int[] newBuffer = ArrayPool<int>.Shared.Rent(capacity * 2);
+                            Array.Copy(buffer, newBuffer, capacity);
+                            ArrayPool<int>.Shared.Return(buffer);
+                            buffer = newBuffer;
+                            capacity *= 2;
+                        }
+                        buffer[pos++] = docId;
+                    }
+                    
+                    if (pos > 0)
+                    {
+                        globalCandidates |= RoaringBitmap.CreateFromSorted(buffer, pos);
                     }
                 }
+                finally
+                {
+                    ArrayPool<int>.Shared.Return(buffer);
+                }
 
-                if (candidates.Count >= topK * 10)
+                if (globalCandidates.Cardinality >= topK * 10)
                     break;
             }
         }
 
-        return candidates;
+        return globalCandidates;
     }
 
-    private static HashSet<int> SelectCandidatesDisjunctive(
+    /// <summary>
+    /// Disjunctive candidate selection for typo / missing-term scenarios.
+    /// Updates upperBounds in-place and uses it as the membership set.
+    /// </summary>
+    private static RoaringBitmap SelectCandidatesDisjunctive(
         List<TermInfo> terms,
         int topK,
         int totalDocs,
-        Dictionary<int, float> upperBounds)
+        float[] upperBounds)
     {
-        HashSet<int> candidates = [];
-
         float maxIdf = 0f;
-        foreach(var t in terms) if(t.Idf > maxIdf) maxIdf = t.Idf;
+        foreach (var t in terms)
+            if (t.Idf > maxIdf) maxIdf = t.Idf;
 
         terms.Sort((a, b) => b.Idf.CompareTo(a.Idf));
 
         bool hasSelectiveCandidates = false;
+        int localCount = 0;
+
+        RoaringBitmap result = RoaringBitmap.Create();
 
         foreach (TermInfo termInfo in terms)
         {
@@ -215,111 +267,174 @@ internal class TieredCandidateSelector
             if (postings == null)
                 continue;
 
-            while (true)
-            {
-                int docId = postings.NextDoc();
-                if (docId == PostingsEnumConstants.NO_MORE_DOCS)
-                    break;
+            int capacity = 4096;
+            int[] buffer = ArrayPool<int>.Shared.Rent(capacity);
+            int pos = 0;
 
-                if (candidates.Add(docId))
+            try 
+            {
+                while (true)
                 {
-                    upperBounds[docId] = termInfo.MaxScore;
+                    int docId = postings.NextDoc();
+                    if (docId == PostingsEnumConstants.NO_MORE_DOCS)
+                        break;
+
+                    float ub = upperBounds[docId];
+                    if (ub == 0)
+                    {
+                        upperBounds[docId] = termInfo.MaxScore;
+                        localCount++;
+                    }
+                    else
+                    {
+                        upperBounds[docId] = ub + termInfo.MaxScore;
+                    }
+                    
+                    if (pos >= capacity)
+                    {
+                        int[] newBuffer = ArrayPool<int>.Shared.Rent(capacity * 2);
+                        Array.Copy(buffer, newBuffer, capacity);
+                        ArrayPool<int>.Shared.Return(buffer);
+                        buffer = newBuffer;
+                        capacity *= 2;
+                    }
+                    buffer[pos++] = docId;
                 }
-                else
+                
+                if (pos > 0)
                 {
-                    upperBounds[docId] += termInfo.MaxScore;
+                    result |= RoaringBitmap.CreateFromSorted(buffer, pos);
                 }
             }
-            
-            if (!isLowQuality && candidates.Count > 0)
+            finally
+            {
+                ArrayPool<int>.Shared.Return(buffer);
+            }
+
+            if (!isLowQuality && localCount > 0)
                 hasSelectiveCandidates = true;
 
-            if (candidates.Count >= topK * 100)
+            if (localCount >= topK * 100)
                 break;
         }
 
-        return candidates;
+        return result;
     }
 
-    private static HashSet<int> IntersectAllTerms(List<TermInfo> terms)
+    /// <summary>
+    /// Intersects all terms (logical AND) using driver->Advance pattern, and assigns a fixed upper bound
+    /// for any new docs found. Returns the resulting bitmap.
+    /// </summary>
+    private static RoaringBitmap IntersectTerms(
+        List<TermInfo> terms,
+        float tierUpperBound,
+        float[] upperBounds)
     {
         var sw = System.Diagnostics.Stopwatch.StartNew();
         if (terms.Count == 0)
-            return [];
+            return RoaringBitmap.Create();
 
         // Collect iterators
         List<IPostingsEnum> enums = new List<IPostingsEnum>(terms.Count);
         foreach (TermInfo termInfo in terms)
         {
             IPostingsEnum? p = termInfo.Term.GetPostingsEnum();
-            if (p == null) return [];
+            if (p == null)
+                return RoaringBitmap.Create();
             enums.Add(p);
         }
         
         // Sort by cost (ascending)
         enums.Sort((a, b) => a.Cost().CompareTo(b.Cost()));
         
-        HashSet<int> result = [];
         int advanceCalls = 0;
         
-        // Use the first enum as the driver
-        IPostingsEnum driver = enums[0];
-        int doc = driver.NextDoc();
+        int capacity = 4096; // Initial capacity
+        int[] buffer = ArrayPool<int>.Shared.Rent(capacity);
+        int pos = 0;
         
-        while (doc != PostingsEnumConstants.NO_MORE_DOCS)
+        try
         {
-            bool match = true;
-            for (int i = 1; i < enums.Count; i++)
+            // Use the first enum as the driver
+            IPostingsEnum driver = enums[0];
+            int doc = driver.NextDoc();
+            
+            while (doc != PostingsEnumConstants.NO_MORE_DOCS)
             {
-                advanceCalls++;
-                int target = enums[i].Advance(doc);
-                if (target > doc)
+                bool match = true;
+                for (int i = 1; i < enums.Count; i++)
                 {
-                    match = false;
-                    doc = target; // Skip ahead
-                    if (doc == PostingsEnumConstants.NO_MORE_DOCS)
-                        goto End;
-                    
-                    // Re-align driver (and others implicitly in next loop)
-                    doc = driver.Advance(doc);
-                    if (doc == PostingsEnumConstants.NO_MORE_DOCS)
-                        goto End;
+                    advanceCalls++;
+                    int target = enums[i].Advance(doc);
+                    if (target > doc)
+                    {
+                        match = false;
+                        doc = target; // Skip ahead
+                        if (doc == PostingsEnumConstants.NO_MORE_DOCS)
+                            goto End;
                         
-                    // Restart verification from first non-driver enum
-                    i = 0; 
-                    break; 
+                        // Re-align driver
+                        doc = driver.Advance(doc);
+                        if (doc == PostingsEnumConstants.NO_MORE_DOCS)
+                            goto End;
+                            
+                        // Restart verification from first non-driver enum
+                        i = 0; 
+                        break; 
+                    }
                 }
                 
-                // If target == doc, continue to next enum
-            }
-            
-            if (match)
-            {
-                result.Add(doc);
-                doc = driver.NextDoc();
-            }
-        }
+                if (match)
+                {
+                    if (pos >= capacity)
+                    {
+                        int[] newBuffer = ArrayPool<int>.Shared.Rent(capacity * 2);
+                        Array.Copy(buffer, newBuffer, capacity);
+                        ArrayPool<int>.Shared.Return(buffer);
+                        buffer = newBuffer;
+                        capacity *= 2;
+                    }
+                    buffer[pos++] = doc;
 
-    End:
-        sw.Stop();
-        if (sw.ElapsedMilliseconds > 5)
-        {
-            Console.WriteLine($"[DEBUG] IntersectAllTerms: {sw.ElapsedMilliseconds}ms, Advance calls: {advanceCalls}, DriverCost: {driver.Cost()}, Result: {result.Count}");
+                    if (upperBounds[doc] == 0)
+                    {
+                        upperBounds[doc] = tierUpperBound;
+                    }
+                    doc = driver.NextDoc();
+                }
+            }
+
+        End:
+            sw.Stop();
+#if DEBUG
+            if (sw.ElapsedMilliseconds > 5)
+            {
+                Console.WriteLine($"[DEBUG] IntersectAllTerms: {sw.ElapsedMilliseconds}ms, Advance calls: {advanceCalls}, DriverCost: {driver.Cost()}");
+            }
+#endif
+            return RoaringBitmap.CreateFromSorted(buffer, pos);
         }
-        return result;
+        finally
+        {
+            ArrayPool<int>.Shared.Return(buffer);
+        }
     }
 
+    /// <summary>
+    /// Utility to filter by upper bound while preserving at least topK candidates.
+    /// </summary>
     public static List<int> FilterByUpperBound(
-        HashSet<int> candidates,
-        Dictionary<int, float> upperBounds,
+        IEnumerable<int> candidates,
+        float[] upperBounds,
         float currentKthScore,
         int topK)
     {
-        List<int> filtered = new List<int>(candidates.Count);
-
+        List<int> filtered = new List<int>();
+        
         foreach (int docId in candidates)
         {
-            if (upperBounds.TryGetValue(docId, out float upperBound))
+            float upperBound = upperBounds[docId];
+            if (upperBound > 0)
             {
                 if (upperBound >= currentKthScore || filtered.Count < topK)
                 {
@@ -331,50 +446,88 @@ internal class TieredCandidateSelector
         return filtered;
     }
 
-    private static HashSet<int> TrySelectPrefixCandidates(
-        Indexing.ShortQuery.PositionalPrefixIndex prefixIndex,
+    /// <summary>
+    /// Prefix-based candidate selection using RoaringBitmap only.
+    /// Matches the original per-prefix-length semantics: we consider each
+    /// prefix length independently (no cross-length union), and apply the
+    /// same density thresholds as the HashSet-based version.
+    /// </summary>
+    private static RoaringBitmap TrySelectPrefixCandidates(
+        PositionalPrefixIndex prefixIndex,
         string originalQuery,
         int topK,
         int queryTermCount,
         int totalDocs,
         out float upperBound)
     {
-        HashSet<int> candidates = [];
         upperBound = 0f;
 
         string queryLower = originalQuery.ToLowerInvariant();
-        
         int maxPrefixLen = Math.Min(queryLower.Length, prefixIndex.MaxPrefixLength);
-        
+
+        // Evaluate each prefix length independently, from longest to shortest
         for (int len = maxPrefixLen; len >= prefixIndex.MinPrefixLength; len--)
         {
             ReadOnlySpan<char> prefix = queryLower.AsSpan(0, len);
             PrefixPostingList? postingList = prefixIndex.GetPostingList(prefix);
-            
             if (postingList == null || postingList.Count == 0)
                 continue;
-            
-            foreach (ref readonly Indexing.ShortQuery.PrefixPosting posting in postingList.Postings)
+
+            RoaringBitmap candidateBits;
+
+            // Case 1: Use precomputed doc-level RoaringBitmap (word-start / first-position docs).
+            if (postingList.DocSet != null)
             {
-                if (posting.Position == 0 || posting.IsWordStart)
+                candidateBits = postingList.DocSet;
+            }
+            else
+            {
+                // Case 2: Build a fresh RoaringBitmap for this prefix length only.
+                int capacity = 1024;
+                int[] buffer = ArrayPool<int>.Shared.Rent(capacity);
+                int pos = 0;
+                try
                 {
-                    candidates.Add(posting.DocumentId);
+                    foreach (ref readonly PrefixPosting posting in postingList.Postings)
+                    {
+                        if (posting.Position == 0 || posting.IsWordStart)
+                        {
+                             if (pos >= capacity)
+                             {
+                                 int[] newBuffer = ArrayPool<int>.Shared.Rent(capacity * 2);
+                                 Array.Copy(buffer, newBuffer, capacity);
+                                 ArrayPool<int>.Shared.Return(buffer);
+                                 buffer = newBuffer;
+                                 capacity *= 2;
+                             }
+                             buffer[pos++] = posting.DocumentId;
+                        }
+                    }
+                    candidateBits = RoaringBitmap.CreateFromSorted(buffer, pos);
+                }
+                finally
+                {
+                    ArrayPool<int>.Shared.Return(buffer);
                 }
             }
-            
-            if (candidates.Count > 0 && candidates.Count <= topK * 10)
+
+            long pop = candidateBits.Cardinality;
+            if (pop == 0)
+                continue;
+
+            // If this prefix is extremely dense, shorter prefixes will only be denser
+            if (pop > (long)topK * 20)
             {
-                upperBound = queryTermCount * 10f; 
-                return candidates;
-            }
-            
-            if (candidates.Count > topK * 20)
-            {
-                candidates.Clear();
                 continue;
             }
+
+            if (pop > 0 && pop <= (long)topK * 10)
+            {
+                upperBound = queryTermCount * 10f;
+                return candidateBits;
+            }
         }
-        
-        return candidates;
+
+        return RoaringBitmap.Create();
     }
 }

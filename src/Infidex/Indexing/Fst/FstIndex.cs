@@ -280,126 +280,123 @@ internal sealed class FstIndex
     #endregion
     
     #region Fuzzy Match (Edit Distance)
-    
-    /// <summary>
-    /// Returns all term outputs within edit distance 1 of the query (LD1).
-    /// Uses symmetric delete approach: query deletions + FST exact lookups.
-    /// </summary>
-    public void GetWithinEditDistance1(ReadOnlySpan<char> query, List<int> outputs)
-    {
-        // Wrapper for backward compatibility (just outputs)
-        List<(string Term, int Output)> matches = new List<(string Term, int Output)>();
-        GetWithinEditDistance1WithTerms(query, matches);
-        foreach (var match in matches)
-        {
-            if (!outputs.Contains(match.Output))
-                outputs.Add(match.Output);
-        }
-    }
 
     /// <summary>
-    /// Returns all term outputs within edit distance 1 of the query (LD1), including the matched term string.
+    /// Matches all terms within edit distance 1 of the query (LD1) and adds outputs to the list.
     /// </summary>
-    public void GetWithinEditDistance1WithTerms(ReadOnlySpan<char> query, List<(string Term, int Output)> matches)
+    public void MatchWithinEditDistance1(ReadOnlySpan<char> query, List<int> outputs)
     {
-        if (query.IsEmpty || _forwardNodes.Length == 0)
+        if (_forwardNodes.Length == 0) return;
+        
+        int m = query.Length;
+        if (m == 0)
+        {
+            // Empty query: match terms length <= 1
+            ref FstNode root = ref _forwardNodes[_forwardRootIndex];
+            if (root.IsFinal && root.Output >= 0) outputs.Add(root.Output);
+            int start = root.ArcStartIndex;
+            for(int i=0; i<root.ArcCount; i++)
+            {
+                ref FstArc arc = ref _forwardArcs[start + i];
+                ref FstNode target = ref _forwardNodes[arc.TargetNodeIndex];
+                if (target.IsFinal && target.Output >= 0) outputs.Add(target.Output);
+            }
             return;
-        
-        // 1. Exact match
-        int exact = GetExact(query);
-        if (exact >= 0)
-            matches.Add((query.ToString(), exact));
-        
-        // 2. Deletions from query (handles insertions in target)
-        Span<char> buffer = stackalloc char[query.Length - 1];
-        for (int i = 0; i < query.Length; i++)
+        }
+
+        if (m > 64) 
         {
-            // Create deletion variant
-            int writeIdx = 0;
-            for (int j = 0; j < query.Length; j++)
-            {
-                if (j != i)
-                    buffer[writeIdx++] = query[j];
-            }
+            int exact = GetExact(query);
+            if (exact >= 0) outputs.Add(exact);
+            return;
+        }
+
+        // Build Pattern Masks (PM)
+        Span<char> pmKeys = stackalloc char[m];
+        Span<ulong> pmValues = stackalloc ulong[m];
+        int pmCount = 0;
+        
+        for (int i = 0; i < m; i++)
+        {
+            char c = query[i];
+            int idx = -1;
+            for(int k=0; k<pmCount; k++) { if (pmKeys[k] == c) { idx = k; break; } }
             
-            int output = GetExact(buffer);
-            if (output >= 0)
-                matches.Add((buffer.ToString(), output));
+            if (idx == -1)
+            {
+                pmKeys[pmCount] = c;
+                pmValues[pmCount] = 1UL << i;
+                pmCount++;
+            }
+            else
+            {
+                pmValues[idx] |= 1UL << i;
+            }
         }
         
-        // 3. Collect terms that are deletions of our query (handles deletions from target)
-        CollectDeletionVariantsWithTerms(query, matches);
+        ulong vp = ~0UL; // All 1s
+        ulong vn = 0UL;
+        int score = m;
+        
+        SearchBitParallel(_forwardRootIndex, vp, vn, score, 0, query, pmKeys, pmValues, pmCount, outputs);
     }
     
-    private void CollectDeletionVariantsWithTerms(ReadOnlySpan<char> query, List<(string Term, int Output)> matches)
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private void SearchBitParallel(
+        int nodeIndex, ulong vp, ulong vn, int score,
+        int depth, 
+        ReadOnlySpan<char> query, 
+        ReadOnlySpan<char> pmKeys, ReadOnlySpan<ulong> pmValues, int pmCount,
+        List<int> outputs)
     {
-        // Use stack-based DFS to avoid recursion overhead
-        // But here we reconstruct the string, so we need a buffer that lives long enough?
-        // Actually buffer is used to probe.
+        ref FstNode node = ref _forwardNodes[nodeIndex];
         
-        Span<char> buffer = stackalloc char[query.Length + 1];
-        
-        for (int insertPos = 0; insertPos <= query.Length; insertPos++)
+        // Match check
+        if (score <= 1 && node.IsFinal && node.Output >= 0)
         {
-            for (int i = 0; i < insertPos && i < query.Length; i++)
-                buffer[i] = query[i];
-            
-            for (int i = insertPos; i < query.Length; i++)
-                buffer[i + 1] = query[i];
-            
-            int nodeIndex = _forwardRootIndex;
-            bool valid = true;
-            
-            for (int i = 0; i < insertPos && valid; i++)
-            {
-                int arcIndex = FindArc(nodeIndex, query[i], _forwardNodes, _forwardArcs);
-                if (arcIndex < 0)
-                    valid = false;
-                else
-                    nodeIndex = _forwardArcs[arcIndex].TargetNodeIndex;
-            }
-            
-            if (!valid)
-                continue;
-            
-            ref FstNode node = ref _forwardNodes[nodeIndex];
-            for (int a = 0; a < node.ArcCount; a++)
-            {
-                ref FstArc arc = ref _forwardArcs[node.ArcStartIndex + a];
-                buffer[insertPos] = arc.Label;
-                
-                int nextNode = arc.TargetNodeIndex;
-                bool matchesQuery = true;
-                
-                for (int i = insertPos; i < query.Length && matchesQuery; i++)
-                {
-                    int nextArc = FindArc(nextNode, query[i], _forwardNodes, _forwardArcs);
-                    if (nextArc < 0)
-                        matchesQuery = false;
-                    else
-                        nextNode = _forwardArcs[nextArc].TargetNodeIndex;
-                }
-                
-                if (matchesQuery && _forwardNodes[nextNode].IsFinal)
-                {
-                    int output = _forwardNodes[nextNode].Output;
-                    if (output >= 0)
-                        matches.Add((buffer.ToString(), output));
-                }
-            }
+            outputs.Add(node.Output);
         }
-    }
-    
-    private void CollectDeletionVariants(ReadOnlySpan<char> query, List<int> outputs)
-    {
-        // Keep original for compat, but implementation can delegate if needed.
-        // For performance, duplicating logic is better than allocating strings if caller only wants outputs.
-        // But to save code, I'll assume `GetWithinEditDistance1WithTerms` is primarily used now or I update this one.
-        // I updated `GetWithinEditDistance1` to wrap `GetWithinEditDistance1WithTerms`.
-        // So this method is dead code unless I revert.
-        // Wait, I replaced `CollectDeletionVariants` call in `GetWithinEditDistance1`.
-        // So I can remove this method or rename the new one.
-        // I'll keep the new one as `CollectDeletionVariantsWithTerms` and remove the old one.
+        
+        // Pruning
+        if (depth >= query.Length + 1) return;
+
+        int start = node.ArcStartIndex;
+        int count = node.ArcCount;
+        int m = query.Length;
+        ulong maskM = 1UL << (m - 1);
+        
+        for (int i = 0; i < count; i++)
+        {
+            ref FstArc arc = ref _forwardArcs[start + i];
+            char c = arc.Label;
+            
+            // Get PM[c]
+            ulong pm = 0;
+            for(int k=0; k<pmCount; k++) 
+            {
+                if (pmKeys[k] == c) 
+                {
+                    pm = pmValues[k];
+                    break;
+                }
+            }
+            
+            // Myers Step
+            ulong x = pm | vn;
+            ulong d0 = ((vp + (x & vp)) ^ vp) | x;
+            ulong hn = vp & d0;
+            ulong hp = vn | ~(vp | d0);
+            
+            ulong newVp = (hn << 1) | ~(d0 | (hp << 1));
+            ulong newVn = d0 & (hp << 1);
+            
+            // Update score
+            int newScore = score;
+            if ((hp & maskM) != 0) newScore++;
+            if ((hn & maskM) != 0) newScore--;
+
+            SearchBitParallel(arc.TargetNodeIndex, newVp, newVn, newScore, depth + 1, query, pmKeys, pmValues, pmCount, outputs);
+        }
     }
     
     #endregion

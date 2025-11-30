@@ -3,7 +3,7 @@ namespace Infidex.Core;
 /// <summary>
 /// Represents a tokenized segment of text (n-gram or word).
 /// </summary>
-public class Shingle
+public struct Shingle : IEquatable<Shingle>
 {
     /// <summary>
     /// The actual text content of the shingle
@@ -31,12 +31,16 @@ public class Shingle
     
     public override bool Equals(object? obj)
     {
-        if (obj is Shingle other)
-            return Text == other.Text;
-        return false;
+        return obj is Shingle other && Equals(other);
     }
     
-    public override int GetHashCode() => Text.GetHashCode();
+    public bool Equals(Shingle other)
+    {
+        return Text == other.Text;
+    }
+    
+    public override int GetHashCode() => Text?.GetHashCode() ?? 0;
+    
+    public static bool operator ==(Shingle left, Shingle right) => left.Equals(right);
+    public static bool operator !=(Shingle left, Shingle right) => !left.Equals(right);
 }
-
-

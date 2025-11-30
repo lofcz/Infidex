@@ -7,11 +7,12 @@ public class DocumentCollection
 {
     private readonly List<Document> _documents;
     private readonly Dictionary<long, List<int>> _documentKeyToIds; // Supports aliases (same key, multiple docs)
-    
+
     public DocumentCollection()
     {
         _documents = [];
         _documentKeyToIds = new Dictionary<long, List<int>>();
+        Count = 0;
     }
     
     /// <summary>
@@ -23,6 +24,9 @@ public class DocumentCollection
         document.Id = id;
         _documents.Add(document);
         
+        if (!document.Deleted)
+            Count++;
+
         // Support aliases - same DocumentKey can map to multiple documents
         if (!_documentKeyToIds.ContainsKey(document.DocumentKey))
             _documentKeyToIds[document.DocumentKey] = [];
@@ -186,6 +190,8 @@ public class DocumentCollection
         {
             _documentKeyToIds[kvp.Key] = kvp.Value;
         }
+        
+        Count = _documents.Count;
     }
     
     /// <summary>
@@ -196,7 +202,11 @@ public class DocumentCollection
         List<Document> docs = GetDocumentsByKey(documentKey);
         foreach (Document doc in docs)
         {
-            doc.Deleted = true;
+            if (!doc.Deleted)
+            {
+                doc.Deleted = true;
+                Count--;
+            }
         }
     }
     
@@ -211,8 +221,8 @@ public class DocumentCollection
     /// <summary>
     /// Total number of documents (excluding deleted)
     /// </summary>
-    public int Count => _documents.Count(d => !d.Deleted);
-    
+    public int Count { get; private set; }
+
     /// <summary>
     /// Clears all documents
     /// </summary>
@@ -220,6 +230,6 @@ public class DocumentCollection
     {
         _documents.Clear();
         _documentKeyToIds.Clear();
+        Count = 0;
     }
 }
-

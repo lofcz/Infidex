@@ -53,6 +53,9 @@ internal sealed class SearchPipeline
             consolidateMs = 0,
             topKMs = 0,
             prescreenMs = 0,
+            wmLookupMs = 0,
+            docIdxMs = 0,
+            prepMs = 0,
             wordMatcherCoverageMs = 0,
             tfidfCoverageMs = 0,
             truncationMs = 0;
@@ -170,7 +173,7 @@ internal sealed class SearchPipeline
         ScoreEntry[] coverageResults = ExecuteCoverageStage(
             searchText, coverageSetup, coverageDepth, maxResults,
             stage1Results, ref bestSegmentsMap,
-            ref topKMs, ref prescreenMs, ref wordMatcherCoverageMs, ref tfidfCoverageMs, ref truncationMs,
+            ref topKMs, ref prescreenMs, ref wmLookupMs, ref docIdxMs, ref prepMs, ref wordMatcherCoverageMs, ref tfidfCoverageMs, ref truncationMs,
             perfStopwatch, tfidfMs);
 
         long coverageTotalMs = perfStopwatch.ElapsedMilliseconds - coverageStartMs;
@@ -186,17 +189,17 @@ internal sealed class SearchPipeline
             }
 
             long s1Overhead = stage1TotalMs - (tfidfMs + consolidateMs);
-            long covOverhead = coverageTotalMs - (topKMs + prescreenMs + wordMatcherCoverageMs + tfidfCoverageMs + truncationMs);
-            Console.WriteLine($"[TIMING] total={perfStopwatch.ElapsedMilliseconds}ms (norm={normMs}ms, stage1={stage1TotalMs}ms [tfidf={tfidfMs}ms, consolidate={consolidateMs}ms, oh={s1Overhead}ms], coverage={coverageTotalMs}ms [topK={topKMs}ms, prescreen={prescreenMs}ms, wmCov={wordMatcherCoverageMs}ms, tfidfCov={tfidfCoverageMs}ms, trunc={truncationMs}ms, oh={covOverhead}ms]) - FALLBACK");
+            long covOverhead = coverageTotalMs - (topKMs + prescreenMs + wmLookupMs + docIdxMs + prepMs + wordMatcherCoverageMs + tfidfCoverageMs + truncationMs);
+            Console.WriteLine($"[TIMING] total={perfStopwatch.ElapsedMilliseconds}ms (norm={normMs}ms, stage1={stage1TotalMs}ms [tfidf={tfidfMs}ms, consolidate={consolidateMs}ms, oh={s1Overhead}ms], coverage={coverageTotalMs}ms [topK={topKMs}ms, prescreen={prescreenMs}ms, wmLup={wmLookupMs}ms, docIdx={docIdxMs}ms, prep={prepMs}ms, wmCov={wordMatcherCoverageMs}ms, tfidfCov={tfidfCoverageMs}ms, trunc={truncationMs}ms, oh={covOverhead}ms]) - FALLBACK");
 #endif
             return stage1Results;
         }
 
 #if DEBUG
         long overhead1 = stage1TotalMs - (tfidfMs + consolidateMs);
-        long coverageOverhead = coverageTotalMs - (topKMs + prescreenMs + wordMatcherCoverageMs + tfidfCoverageMs + truncationMs);
+        long coverageOverhead = coverageTotalMs - (topKMs + prescreenMs + wmLookupMs + docIdxMs + prepMs + wordMatcherCoverageMs + tfidfCoverageMs + truncationMs);
         long totalOverhead = perfStopwatch.ElapsedMilliseconds - (stage1TotalMs + coverageTotalMs);
-        Console.WriteLine($"[TIMING] total={perfStopwatch.ElapsedMilliseconds}ms (norm={normMs}ms, stage1={stage1TotalMs}ms [tfidf={tfidfMs}ms, consolidate={consolidateMs}ms, oh={overhead1}ms], coverage={coverageTotalMs}ms [topK={topKMs}ms, prescreen={prescreenMs}ms, wmCov={wordMatcherCoverageMs}ms, tfidfCov={tfidfCoverageMs}ms, trunc={truncationMs}ms, oh={coverageOverhead}ms], finalOH={totalOverhead}ms)");
+        Console.WriteLine($"[TIMING] total={perfStopwatch.ElapsedMilliseconds}ms (norm={normMs}ms, stage1={stage1TotalMs}ms [tfidf={tfidfMs}ms, consolidate={consolidateMs}ms, oh={overhead1}ms], coverage={coverageTotalMs}ms [topK={topKMs}ms, prescreen={prescreenMs}ms, wmLup={wmLookupMs}ms, docIdx={docIdxMs}ms, prep={prepMs}ms, wmCov={wordMatcherCoverageMs}ms, tfidfCov={tfidfCoverageMs}ms, trunc={truncationMs}ms, oh={coverageOverhead}ms], finalOH={totalOverhead}ms)");
 #endif
         return coverageResults;
     }
@@ -285,7 +288,7 @@ internal sealed class SearchPipeline
 
         if (EnableDebugLogging)
         {
-            Console.WriteLine($"[DEBUG] Stage1 TF-IDF: {relevancyScores.Count} candidates");
+            Console.WriteLine($"[DEBUG] Stage1 TF-IDF: {relevancyScores.Count} candidates in {tfidfMs}ms");
         }
 
         return relevancyScores;
@@ -300,6 +303,9 @@ internal sealed class SearchPipeline
         ref Dictionary<int, byte>? bestSegmentsMap,
         ref long topKMs,
         ref long prescreenMs,
+        ref long wmLookupMs,
+        ref long docIdxMs,
+        ref long prepMs,
         ref long wordMatcherCoverageMs,
         ref long tfidfCoverageMs,
         ref long truncationMs,
@@ -325,12 +331,16 @@ internal sealed class SearchPipeline
 
         if (perfStopwatch != null) prescreenMs = perfStopwatch.ElapsedMilliseconds - prescreenStart;
 
+        long wmLookupStart = perfStopwatch?.ElapsedMilliseconds ?? 0;
         HashSet<int> wordMatcherInternalIds = WordMatcherLookup.Execute(
             searchText, _wordMatcher, _coverageSetup,
             _vectorModel.Tokenizer.TokenizerSetup?.Delimiters ?? [' '],
             EnableDebugLogging);
+        if (perfStopwatch != null) wmLookupMs = perfStopwatch.ElapsedMilliseconds - wmLookupStart;
 
+        long docIdxStart = perfStopwatch?.ElapsedMilliseconds ?? 0;
         (HashSet<long> uniqueDocKeys, Dictionary<long, int> documentKeyToIndex) = BuildDocumentKeyIndex(topCandidates, wordMatcherInternalIds);
+        if (perfStopwatch != null) docIdxMs = perfStopwatch.ElapsedMilliseconds - docIdxStart;
 
         long lcsSpanPointer = 0;
         Span2D<byte> lcsAndWordHitsSpan = default;
@@ -347,6 +357,7 @@ internal sealed class SearchPipeline
             char[] delimiters = _vectorModel.Tokenizer.TokenizerSetup?.Delimiters ?? [' '];
             int minStemLength = _vectorModel.Tokenizer.IndexSizes.Min();
 
+            long prepStart = perfStopwatch?.ElapsedMilliseconds ?? 0;
             string[] queryTokens = searchText.Split(delimiters, StringSplitOptions.RemoveEmptyEntries);
 
             HashSet<int> tfidfInternalIds = BuildTfidfInternalIdSet(topCandidates);
@@ -354,6 +365,7 @@ internal sealed class SearchPipeline
 
             int wmLimit = Math.Max(0, coverageDepth - wmOverlapping.Count);
             List<int> wmToProcess = wmOverlapping.Concat(wmUnique.Take(wmLimit)).ToList();
+            if (perfStopwatch != null) prepMs = perfStopwatch.ElapsedMilliseconds - prepStart;
 
             long wmCoverageStart = perfStopwatch?.ElapsedMilliseconds ?? 0;
             foreach (int internalId in wmToProcess)

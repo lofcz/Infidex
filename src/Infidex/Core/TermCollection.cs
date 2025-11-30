@@ -1,3 +1,6 @@
+using Infidex.Core;
+using Infidex.Tokenization;
+
 namespace Infidex.Core;
 
 /// <summary>
@@ -7,6 +10,7 @@ namespace Infidex.Core;
 public class TermCollection
 {
     internal Dictionary<string, Term> _termDictionary;
+    internal Dictionary<ulong, Term>? _shortTermDictionary;
     private readonly List<Term> _termList; // For index-based access (FST outputs)
     private readonly ReaderWriterLockSlim _lock;
     private volatile bool _doLock;
@@ -23,6 +27,7 @@ public class TermCollection
     public TermCollection()
     {
         _termDictionary = new Dictionary<string, Term>();
+        _shortTermDictionary = new Dictionary<ulong, Term>();
         _termList = new List<Term>();
         _lock = new ReaderWriterLockSlim();
         _doLock = false;
@@ -38,6 +43,7 @@ public class TermCollection
             term.Clear();
         }
         _termDictionary.Clear();
+        _shortTermDictionary?.Clear();
         _termList.Clear();
     }
     
@@ -59,6 +65,15 @@ public class TermCollection
     /// </summary>
     public Term CountTermUsage(string termText, int stopTermLimit, bool forFastInsert, out bool isNewTerm)
     {
+        return CountTermUsage(termText.AsSpan(), stopTermLimit, forFastInsert, out isNewTerm);
+    }
+
+    /// <summary>
+    /// Counts term usage in the corpus and returns the term, creating it if necessary.
+    /// Optimized for Span input to avoid string allocation for existing short terms.
+    /// </summary>
+    public Term CountTermUsage(ReadOnlySpan<char> termText, int stopTermLimit, bool forFastInsert, out bool isNewTerm)
+    {
         bool shouldLock = _doLock;
         isNewTerm = false;
         
@@ -67,24 +82,54 @@ public class TermCollection
             if (shouldLock)
                 _lock.EnterWriteLock();
             
-            if (!_termDictionary.TryGetValue(termText, out Term? term))
+            // Short term optimization
+            int len = termText.Length;
+            if (len >= 2 && len <= 3 && _shortTermDictionary != null)
             {
-                term = new Term(termText);
-                _termDictionary.Add(termText, term);
-                _termList.Add(term); // Also add to list for index-based access
+                NGramKey key = new NGramKey(termText);
+                if (_shortTermDictionary.TryGetValue(key.Value, out Term? term))
+                {
+                    // Found existing term!
+                    if (!forFastInsert)
+                    {
+                        term.IncrementTermUsageCounter(stopTermLimit);
+                    }
+                    return term;
+                }
+                else
+                {
+                    // New short term
+                    string text = termText.ToString();
+                    term = new Term(text);
+                    _termDictionary.Add(text, term);
+                    _shortTermDictionary.Add(key.Value, term);
+                    _termList.Add(term);
+                    isNewTerm = true;
+                    
+                    term.IncrementTermUsageCounter(stopTermLimit);
+                    return term;
+                }
+            }
+            
+            string strKey = termText.ToString();
+            
+            if (!_termDictionary.TryGetValue(strKey, out Term? existingTerm))
+            {
+                existingTerm = new Term(strKey);
+                _termDictionary.Add(strKey, existingTerm);
+                _termList.Add(existingTerm);
                 isNewTerm = true;
                 
-                // Initial usage count
-                term.IncrementTermUsageCounter(stopTermLimit);
-                return term;
+                existingTerm.IncrementTermUsageCounter(stopTermLimit);
+                return existingTerm;
             }
             
             if (!forFastInsert)
             {
-                term.IncrementTermUsageCounter(stopTermLimit);
+                existingTerm.IncrementTermUsageCounter(stopTermLimit);
             }
             
-            return term;
+            return existingTerm;
         }
         finally
         {
@@ -149,5 +194,3 @@ public class TermCollection
     /// </summary>
     public int Count => _termDictionary.Count;
 }
-
-

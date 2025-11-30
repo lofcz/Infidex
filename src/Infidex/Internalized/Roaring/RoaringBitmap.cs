@@ -5,6 +5,7 @@ namespace Infidex.Internalized.Roaring;
 public class RoaringBitmap : IEnumerable<int>, IEquatable<RoaringBitmap>
 {
     private readonly RoaringArray _highLowContainer;
+    internal RoaringArray HighLowContainer => _highLowContainer;
 
     private RoaringBitmap(RoaringArray input)
     {
@@ -87,14 +88,41 @@ public class RoaringBitmap : IEnumerable<int>, IEquatable<RoaringBitmap>
         }
 
         Array.Sort(data);
+        return CreateFromSortedUnique(data, data.Length, false);
+    }
+
+    /// <summary>
+    /// Creates a RoaringBitmap from pre-sorted integers.
+    /// </summary>
+    public static RoaringBitmap CreateFromSorted(IEnumerable<int> values)
+    {
+        int[] data = values as int[] ?? values.ToArray();
+        return CreateFromSortedUnique(data, data.Length, false);
+    }
+    
+    public static RoaringBitmap CreateFromSorted(int[] data, int length)
+    {
+        return CreateFromSortedUnique(data, length, false);
+    }
+
+    private static RoaringBitmap CreateFromSortedUnique(int[] data, int length, bool knownUnique)
+    {
+        if (length == 0)
+        {
+            return new RoaringBitmap(new RoaringArray(0, [], []));
+        }
 
         // In-place deduplication (two pointers technique)
-        int uniqueCount = 1;
-        for (int i = 1; i < data.Length; i++)
+        int uniqueCount = length;
+        if (!knownUnique)
         {
-            if (data[i] != data[uniqueCount - 1])
+            uniqueCount = 1;
+            for (int i = 1; i < length; i++)
             {
-                data[uniqueCount++] = data[i];
+                if (data[i] != data[uniqueCount - 1])
+                {
+                    data[uniqueCount++] = data[i];
+                }
             }
         }
 

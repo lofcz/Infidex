@@ -26,7 +26,7 @@ public class TokenizerTests
             startPadSize: 2, 
             tokenizerSetup: tokenizerSetup);
         
-        var shingles = tokenizer.TokenizeForSearch("hello world", out var dict, false);
+        var shingles = tokenizer.TokenizeForSearch("hello world");
         
         Assert.IsTrue(shingles.Any(s => s.Text == "hello"));
         Assert.IsTrue(shingles.Any(s => s.Text == "world"));
@@ -63,5 +63,3 @@ public class TokenizerTests
         Assert.IsTrue(shingles.Any(s => s.Text.Contains("best")));
     }
 }
-
-

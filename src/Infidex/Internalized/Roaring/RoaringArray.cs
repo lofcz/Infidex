@@ -39,6 +39,10 @@ internal class RoaringArray : IEquatable<RoaringArray>
     }
 
     public long Cardinality { get; }
+
+    public int Size => _size;
+    public ushort[] Keys => _keys;
+    public Container[] Values => _values;
     
     public void EnumerateFill(List<int> list)
     {

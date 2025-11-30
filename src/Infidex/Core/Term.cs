@@ -1,5 +1,6 @@
 using Infidex.Indexing;
 using Infidex.Indexing.Segments;
+using Infidex.Internalized.Roaring;
 
 namespace Infidex.Core;
 
@@ -23,6 +24,9 @@ public class Term
     // Segment-Index Data
     private SegmentReader? _segmentReader;
     private int _docIdOffset;
+
+    // Bitmap-Index Data (Fuzzy union)
+    private RoaringBitmap? _bitmapSource;
 
     /// <summary>
     /// Optional term text.
@@ -53,6 +57,15 @@ public class Term
         DocumentFrequency = docFreq;
         _weights = null;
         _documentIds = null;
+    }
+
+    internal void SetBitmapSource(RoaringBitmap bitmap, int docFreq)
+    {
+        _bitmapSource = bitmap;
+        DocumentFrequency = docFreq;
+        _weights = null;
+        _documentIds = null;
+        _segmentReader = null;
     }
 
     public bool FirstCycleAdd(int documentIndex, int stopTermLimit, bool removeDuplicates, float fieldWeight = 1.0f)
@@ -160,6 +173,11 @@ public class Term
         if (_segmentReader != null)
         {
             return _segmentReader.GetPostingsEnum(Text!, _docIdOffset);
+        }
+
+        if (_bitmapSource != null)
+        {
+            return new RoaringPostingsEnum(_bitmapSource);
         }
 
         return _documentIds == null ? null : new ArrayPostingsEnum(_documentIds, _weights);
