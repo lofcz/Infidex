@@ -4,8 +4,7 @@ using System.Runtime.CompilerServices;
 namespace Infidex.Indexing.Fst;
 
 /// <summary>
-/// Unified FST index supporting prefix, suffix, and exact term lookups.
-/// Uses flat arrays for cache efficiency and future memory-mapping support.
+/// FST index supporting prefix, suffix, and exact term lookups.
 /// Thread-safe for concurrent read access after construction.
 /// </summary>
 internal sealed class FstIndex
@@ -40,11 +39,6 @@ internal sealed class FstIndex
         _termCount = termCount;
     }
     
-    /// <summary>
-    /// Creates an empty FST index.
-    /// </summary>
-    public static FstIndex CreateEmpty() => new FstIndex([], [], -1, [], [], -1, 0);
-    
     #region Exact Match
     
     /// <summary>
@@ -72,24 +66,19 @@ internal sealed class FstIndex
         return node.IsFinal ? node.Output : -1;
     }
     
-    /// <summary>
-    /// Checks if an exact term exists in the index.
-    /// </summary>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public bool ContainsExact(ReadOnlySpan<char> term) => GetExact(term) >= 0;
-    
     #endregion
     
     #region Prefix Match
     
     /// <summary>
-    /// Returns all term outputs that start with the given prefix.
-    /// Complexity: O(|prefix| + k) where k is the number of matching terms.
+    /// Returns term outputs that start with the given prefix.
+    /// Fills the outputs span and returns the number of items written.
+    /// Complexity: O(|prefix| + k) where k is the number of collected terms.
     /// </summary>
-    public void GetByPrefix(ReadOnlySpan<char> prefix, List<int> outputs)
+    public int GetByPrefix(ReadOnlySpan<char> prefix, Span<int> outputs)
     {
         if (prefix.IsEmpty || _forwardNodes.Length == 0)
-            return;
+            return 0;
         
         // Navigate to prefix node
         int nodeIndex = _forwardRootIndex;
@@ -98,45 +87,18 @@ internal sealed class FstIndex
         {
             int arcIndex = FindArc(nodeIndex, c, _forwardNodes, _forwardArcs);
             if (arcIndex < 0)
-                return; // Prefix not found
+                return 0; // Prefix not found
             
             nodeIndex = _forwardArcs[arcIndex].TargetNodeIndex;
         }
         
-        // Collect all outputs in subtree
-        CollectOutputs(nodeIndex, _forwardNodes, _forwardArcs, outputs);
-    }
-    
-    /// <summary>
-    /// Returns up to <paramref name="maxOutputs"/> term outputs that start with the given prefix.
-    /// This is useful for bounding work on very dense prefixes.
-    /// Complexity: O(|prefix| + min(k, maxOutputs)) where k is the number of matching terms.
-    /// </summary>
-    public void GetByPrefix(ReadOnlySpan<char> prefix, List<int> outputs, int maxOutputs)
-    {
-        if (prefix.IsEmpty || _forwardNodes.Length == 0 || maxOutputs <= 0)
-            return;
-        
-        // Navigate to prefix node
-        int nodeIndex = _forwardRootIndex;
-        
-        foreach (char c in prefix)
-        {
-            int arcIndex = FindArc(nodeIndex, c, _forwardNodes, _forwardArcs);
-            if (arcIndex < 0)
-                return; // Prefix not found
-            
-            nodeIndex = _forwardArcs[arcIndex].TargetNodeIndex;
-        }
-        
-        // Collect bounded outputs in subtree
-        CollectOutputsLimited(nodeIndex, _forwardNodes, _forwardArcs, outputs, maxOutputs);
+        // Collect outputs in subtree
+        return CollectOutputs(nodeIndex, _forwardNodes, _forwardArcs, outputs);
     }
     
     /// <summary>
     /// Checks if any term starts with the given prefix.
     /// </summary>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public bool HasPrefix(ReadOnlySpan<char> prefix)
     {
         if (prefix.IsEmpty || _forwardNodes.Length == 0)
@@ -183,14 +145,14 @@ internal sealed class FstIndex
     #region Suffix Match
     
     /// <summary>
-    /// Returns all term outputs that end with the given suffix.
-    /// Uses the reverse FST for efficient lookup.
-    /// Complexity: O(|suffix| + k) where k is the number of matching terms.
+    /// Returns term outputs that end with the given suffix.
+    /// Fills the outputs span and returns the number of items written.
+    /// Complexity: O(|suffix| + k) where k is the number of collected terms.
     /// </summary>
-    public void GetBySuffix(ReadOnlySpan<char> suffix, List<int> outputs)
+    public int GetBySuffix(ReadOnlySpan<char> suffix, Span<int> outputs)
     {
         if (suffix.IsEmpty || _reverseNodes.Length == 0)
-            return;
+            return 0;
         
         // Navigate reverse FST with reversed suffix (i.e., forward through suffix)
         int nodeIndex = _reverseRootIndex;
@@ -200,59 +162,12 @@ internal sealed class FstIndex
         {
             int arcIndex = FindArc(nodeIndex, suffix[i], _reverseNodes, _reverseArcs);
             if (arcIndex < 0)
-                return;
+                return 0;
             
             nodeIndex = _reverseArcs[arcIndex].TargetNodeIndex;
         }
         
-        CollectOutputs(nodeIndex, _reverseNodes, _reverseArcs, outputs);
-    }
-    
-    /// <summary>
-    /// Returns up to <paramref name="maxOutputs"/> term outputs that end with the given suffix.
-    /// Uses the reverse FST for efficient lookup.
-    /// Complexity: O(|suffix| + min(k, maxOutputs)) where k is the number of matching terms.
-    /// </summary>
-    public void GetBySuffix(ReadOnlySpan<char> suffix, List<int> outputs, int maxOutputs)
-    {
-        if (suffix.IsEmpty || _reverseNodes.Length == 0 || maxOutputs <= 0)
-            return;
-        
-        int nodeIndex = _reverseRootIndex;
-        
-        for (int i = suffix.Length - 1; i >= 0; i--)
-        {
-            int arcIndex = FindArc(nodeIndex, suffix[i], _reverseNodes, _reverseArcs);
-            if (arcIndex < 0)
-                return;
-            
-            nodeIndex = _reverseArcs[arcIndex].TargetNodeIndex;
-        }
-        
-        CollectOutputsLimited(nodeIndex, _reverseNodes, _reverseArcs, outputs, maxOutputs);
-    }
-    
-    /// <summary>
-    /// Checks if any term ends with the given suffix.
-    /// </summary>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public bool HasSuffix(ReadOnlySpan<char> suffix)
-    {
-        if (suffix.IsEmpty || _reverseNodes.Length == 0)
-            return false;
-        
-        int nodeIndex = _reverseRootIndex;
-        
-        for (int i = suffix.Length - 1; i >= 0; i--)
-        {
-            int arcIndex = FindArc(nodeIndex, suffix[i], _reverseNodes, _reverseArcs);
-            if (arcIndex < 0)
-                return false;
-            
-            nodeIndex = _reverseArcs[arcIndex].TargetNodeIndex;
-        }
-        
-        return true;
+        return CollectOutputs(nodeIndex, _reverseNodes, _reverseArcs, outputs);
     }
     
     /// <summary>
@@ -282,33 +197,44 @@ internal sealed class FstIndex
     #region Fuzzy Match (Edit Distance)
 
     /// <summary>
-    /// Matches all terms within edit distance 1 of the query (LD1) and adds outputs to the list.
+    /// Matches all terms within edit distance 1 of the query (LD1) and returns the count of matches.
     /// </summary>
-    public void MatchWithinEditDistance1(ReadOnlySpan<char> query, List<int> outputs)
+    public int MatchWithinEditDistance1(ReadOnlySpan<char> query, Span<int> outputs)
     {
-        if (_forwardNodes.Length == 0) return;
+        if (_forwardNodes.Length == 0) return 0;
         
         int m = query.Length;
+        int count = 0;
+
         if (m == 0)
         {
             // Empty query: match terms length <= 1
             ref FstNode root = ref _forwardNodes[_forwardRootIndex];
-            if (root.IsFinal && root.Output >= 0) outputs.Add(root.Output);
+            if (root.IsFinal && root.Output >= 0) 
+            {
+                if (count < outputs.Length) outputs[count] = root.Output;
+                count++;
+            }
+            
             int start = root.ArcStartIndex;
             for(int i=0; i<root.ArcCount; i++)
             {
                 ref FstArc arc = ref _forwardArcs[start + i];
                 ref FstNode target = ref _forwardNodes[arc.TargetNodeIndex];
-                if (target.IsFinal && target.Output >= 0) outputs.Add(target.Output);
+                if (target.IsFinal && target.Output >= 0)
+                {
+                    if (count < outputs.Length) outputs[count] = target.Output;
+                    count++;
+                }
             }
-            return;
+            return count;
         }
 
         if (m > 64) 
         {
-            int exact = GetExact(query);
-            if (exact >= 0) outputs.Add(exact);
-            return;
+            // For long queries, recursive search is too deep.
+            // Switch to Wagner-Fischer dynamic programming on the FST.
+            return MatchEditDistance1Slow(query, outputs);
         }
 
         // Build Pattern Masks (PM)
@@ -334,69 +260,189 @@ internal sealed class FstIndex
             }
         }
         
-        ulong vp = ~0UL; // All 1s
-        ulong vn = 0UL;
-        int score = m;
+        // Iterative Search
+        var stackArr = ArrayPool<SearchFrame>.Shared.Rent(64);
+        int stackTop = 0;
         
-        SearchBitParallel(_forwardRootIndex, vp, vn, score, 0, query, pmKeys, pmValues, pmCount, outputs);
-    }
-    
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private void SearchBitParallel(
-        int nodeIndex, ulong vp, ulong vn, int score,
-        int depth, 
-        ReadOnlySpan<char> query, 
-        ReadOnlySpan<char> pmKeys, ReadOnlySpan<ulong> pmValues, int pmCount,
-        List<int> outputs)
-    {
-        ref FstNode node = ref _forwardNodes[nodeIndex];
-        
-        // Match check
-        if (score <= 1 && node.IsFinal && node.Output >= 0)
+        try
         {
-            outputs.Add(node.Output);
-        }
-        
-        // Pruning
-        if (depth >= query.Length + 1) return;
-
-        int start = node.ArcStartIndex;
-        int count = node.ArcCount;
-        int m = query.Length;
-        ulong maskM = 1UL << (m - 1);
-        
-        for (int i = 0; i < count; i++)
-        {
-            ref FstArc arc = ref _forwardArcs[start + i];
-            char c = arc.Label;
+            stackArr[stackTop++] = new SearchFrame 
+            { 
+                NodeIndex = _forwardRootIndex, 
+                Vp = ~0UL, 
+                Vn = 0UL, 
+                Score = m, 
+                Depth = 0 
+            };
             
-            // Get PM[c]
-            ulong pm = 0;
-            for(int k=0; k<pmCount; k++) 
+            ulong maskM = 1UL << (m - 1);
+            
+            while (stackTop > 0)
             {
-                if (pmKeys[k] == c) 
+                var frame = stackArr[--stackTop];
+                ref FstNode node = ref _forwardNodes[frame.NodeIndex];
+                
+                // Match check
+                if (frame.Score <= 1 && node.IsFinal && node.Output >= 0)
                 {
-                    pm = pmValues[k];
-                    break;
+                    if (count < outputs.Length) outputs[count] = node.Output;
+                    count++;
+                }
+                
+                // Pruning
+                if (frame.Depth >= m + 1) continue;
+
+                int start = node.ArcStartIndex;
+                int arcCount = node.ArcCount;
+                
+                // Ensure stack capacity
+                if (stackTop + arcCount > stackArr.Length)
+                {
+                    var newArr = ArrayPool<SearchFrame>.Shared.Rent(Math.Max(stackArr.Length * 2, stackTop + arcCount));
+                    Array.Copy(stackArr, newArr, stackTop);
+                    ArrayPool<SearchFrame>.Shared.Return(stackArr);
+                    stackArr = newArr;
+                }
+                
+                for (int i = arcCount - 1; i >= 0; i--)
+                {
+                    ref FstArc arc = ref _forwardArcs[start + i];
+                    char c = arc.Label;
+                    
+                    // Get PM[c]
+                    ulong pm = 0;
+                    for(int k=0; k<pmCount; k++) 
+                    {
+                        if (pmKeys[k] == c) 
+                        {
+                            pm = pmValues[k];
+                            break;
+                        }
+                    }
+                    
+                    ulong x = pm | frame.Vn;
+                    ulong d0 = ((frame.Vp + (x & frame.Vp)) ^ frame.Vp) | x;
+                    ulong hn = frame.Vp & d0;
+                    ulong hp = frame.Vn | ~(frame.Vp | d0);
+                    
+                    ulong newVp = (hn << 1) | ~(d0 | (hp << 1));
+                    ulong newVn = d0 & (hp << 1);
+                    
+                    int newScore = frame.Score;
+                    if ((hp & maskM) != 0) newScore++;
+                    if ((hn & maskM) != 0) newScore--;
+
+                    stackArr[stackTop++] = new SearchFrame 
+                    { 
+                        NodeIndex = arc.TargetNodeIndex, 
+                        Vp = newVp, 
+                        Vn = newVn, 
+                        Score = newScore, 
+                        Depth = frame.Depth + 1 
+                    };
                 }
             }
-            
-            // Myers Step
-            ulong x = pm | vn;
-            ulong d0 = ((vp + (x & vp)) ^ vp) | x;
-            ulong hn = vp & d0;
-            ulong hp = vn | ~(vp | d0);
-            
-            ulong newVp = (hn << 1) | ~(d0 | (hp << 1));
-            ulong newVn = d0 & (hp << 1);
-            
-            // Update score
-            int newScore = score;
-            if ((hp & maskM) != 0) newScore++;
-            if ((hn & maskM) != 0) newScore--;
-
-            SearchBitParallel(arc.TargetNodeIndex, newVp, newVn, newScore, depth + 1, query, pmKeys, pmValues, pmCount, outputs);
         }
+        finally
+        {
+            ArrayPool<SearchFrame>.Shared.Return(stackArr);
+        }
+        
+        return count;
+    }
+    
+    private struct SearchFrame
+    {
+        public int NodeIndex;
+        public ulong Vp;
+        public ulong Vn;
+        public int Score;
+        public int Depth;
+    }
+
+    private int MatchEditDistance1Slow(ReadOnlySpan<char> query, Span<int> outputs)
+    {
+        int count = 0;
+        int m = query.Length;
+        
+        // Initial row: 0, 1, 2, ..., m
+        int[] initialRow = ArrayPool<int>.Shared.Rent(m + 1);
+        for(int i=0; i<=m; i++) initialRow[i] = i;
+
+        var stack = new Stack<(int NodeIndex, int[] Row)>();
+        stack.Push((_forwardRootIndex, initialRow));
+        
+        try
+        {
+            while (stack.Count > 0)
+            {
+                var (nodeIdx, parentRow) = stack.Pop();
+                ref FstNode node = ref _forwardNodes[nodeIdx];
+                
+                // Check match at current node
+                if (parentRow[m] <= 1 && node.IsFinal && node.Output >= 0)
+                {
+                    if (count < outputs.Length) outputs[count++] = node.Output;
+                    if (count >= outputs.Length) 
+                    {
+                         ArrayPool<int>.Shared.Return(parentRow);
+                         return count;
+                    }
+                }
+                
+                // Pruning: if min(Row) > 1, no descendants can match within distance 1
+                int minDistance = parentRow[0];
+                for(int i=1; i<=m; i++) 
+                    if (parentRow[i] < minDistance) minDistance = parentRow[i];
+                
+                if (minDistance > 1)
+                {
+                    ArrayPool<int>.Shared.Return(parentRow);
+                    continue;
+                }
+                
+                int arcStart = node.ArcStartIndex;
+                int arcCount = node.ArcCount;
+                
+                for(int k=0; k<arcCount; k++)
+                {
+                    ref FstArc arc = ref _forwardArcs[arcStart + k];
+                    char c = arc.Label;
+                    
+                    // Calculate next row
+                    int[] nextRow = ArrayPool<int>.Shared.Rent(m + 1);
+                    nextRow[0] = parentRow[0] + 1;
+                    
+                    for(int i=1; i<=m; i++)
+                    {
+                        int cost = (query[i-1] == c) ? 0 : 1;
+                        int d_del = nextRow[i-1] + 1;
+                        int d_ins = parentRow[i] + 1;
+                        int d_sub = parentRow[i-1] + cost;
+                        
+                        int min = d_del;
+                        if (d_ins < min) min = d_ins;
+                        if (d_sub < min) min = d_sub;
+                        
+                        nextRow[i] = min;
+                    }
+                    
+                    stack.Push((arc.TargetNodeIndex, nextRow));
+                }
+                
+                ArrayPool<int>.Shared.Return(parentRow);
+            }
+        }
+        finally
+        {
+            while(stack.Count > 0)
+            {
+                var frame = stack.Pop();
+                ArrayPool<int>.Shared.Return(frame.Row);
+            }
+        }
+        
+        return count;
     }
     
     #endregion
@@ -420,11 +466,22 @@ internal sealed class FstIndex
         if (count == 0)
             return -1;
         
+        // Linear scan for small node counts to avoid branch misprediction penalties
+        if (count <= 8)
+        {
+            for (int i = 0; i < count; i++)
+            {
+                if (arcs[start + i].Label == label)
+                    return start + i;
+            }
+            return -1;
+        }
+
         // Binary search for the label
         int lo = 0, hi = count - 1;
         while (lo <= hi)
         {
-            int mid = lo + (hi - lo) / 2;
+            int mid = lo + ((hi - lo) >> 1);
             char midLabel = arcs[start + mid].Label;
             
             if (midLabel == label)
@@ -439,63 +496,60 @@ internal sealed class FstIndex
     }
     
     /// <summary>
-    /// Collects all outputs from a subtree using iterative DFS.
+    /// Collects outputs from a subtree up to the capacity of the outputs span.
+    /// Returns the number of outputs collected.
     /// </summary>
-    private static void CollectOutputs(int startNode, FstNode[] nodes, FstArc[] arcs, List<int> outputs)
+    private static int CollectOutputs(int startNode, FstNode[] nodes, FstArc[] arcs, Span<int> outputs)
     {
-        if (startNode < 0 || startNode >= nodes.Length)
-            return;
+        if (startNode < 0 || startNode >= nodes.Length || outputs.IsEmpty)
+            return 0;
         
-        // Use a stack for iterative DFS
-        Stack<int> stack = new Stack<int>();
-        stack.Push(startNode);
+        int count = 0;
+        // Use a pool for stack to avoid allocations
+        var stackArr = ArrayPool<int>.Shared.Rent(64);
+        int stackTop = 0;
         
-        while (stack.Count > 0)
+        try
         {
-            int nodeIndex = stack.Pop();
-            ref FstNode node = ref nodes[nodeIndex];
+            stackArr[stackTop++] = startNode;
             
-            if (node.IsFinal && node.Output >= 0)
-                outputs.Add(node.Output);
-            
-            // Push children in reverse order for correct traversal order
-            for (int i = node.ArcCount - 1; i >= 0; i--)
+            while (stackTop > 0)
             {
-                ref FstArc arc = ref arcs[node.ArcStartIndex + i];
-                stack.Push(arc.TargetNodeIndex);
+                int nodeIndex = stackArr[--stackTop];
+                ref FstNode node = ref nodes[nodeIndex];
+                
+                if (node.IsFinal && node.Output >= 0)
+                {
+                    outputs[count++] = node.Output;
+                    if (count >= outputs.Length)
+                        return count;
+                }
+                
+                int arcCount = node.ArcCount;
+                int start = node.ArcStartIndex;
+                
+                // Ensure stack capacity
+                if (stackTop + arcCount > stackArr.Length)
+                {
+                    var newArr = ArrayPool<int>.Shared.Rent(Math.Max(stackArr.Length * 2, stackTop + arcCount));
+                    Array.Copy(stackArr, newArr, stackTop);
+                    ArrayPool<int>.Shared.Return(stackArr);
+                    stackArr = newArr;
+                }
+                
+                for (int i = arcCount - 1; i >= 0; i--)
+                {
+                    ref FstArc arc = ref arcs[start + i];
+                    stackArr[stackTop++] = arc.TargetNodeIndex;
+                }
             }
         }
-    }
-    
-    /// <summary>
-    /// Collects up to <paramref name="maxOutputs"/> outputs from a subtree using iterative DFS.
-    /// </summary>
-    private static void CollectOutputsLimited(int startNode, FstNode[] nodes, FstArc[] arcs, List<int> outputs, int maxOutputs)
-    {
-        if (startNode < 0 || startNode >= nodes.Length || maxOutputs <= 0)
-            return;
-        
-        Stack<int> stack = new Stack<int>();
-        stack.Push(startNode);
-        
-        while (stack.Count > 0 && outputs.Count < maxOutputs)
+        finally
         {
-            int nodeIndex = stack.Pop();
-            ref FstNode node = ref nodes[nodeIndex];
-            
-            if (node.IsFinal && node.Output >= 0)
-            {
-                outputs.Add(node.Output);
-                if (outputs.Count >= maxOutputs)
-                    break;
-            }
-            
-            for (int i = node.ArcCount - 1; i >= 0; i--)
-            {
-                ref FstArc arc = ref arcs[node.ArcStartIndex + i];
-                stack.Push(arc.TargetNodeIndex);
-            }
+            ArrayPool<int>.Shared.Return(stackArr);
         }
+        
+        return count;
     }
     
     /// <summary>
@@ -507,22 +561,43 @@ internal sealed class FstIndex
             return 0;
         
         int count = 0;
-        Stack<int> stack = new Stack<int>();
-        stack.Push(startNode);
+        var stackArr = ArrayPool<int>.Shared.Rent(64);
+        int stackTop = 0;
         
-        while (stack.Count > 0)
+        try
         {
-            int nodeIndex = stack.Pop();
-            ref FstNode node = ref nodes[nodeIndex];
+            stackArr[stackTop++] = startNode;
             
-            if (node.IsFinal)
-                count++;
-            
-            for (int i = 0; i < node.ArcCount; i++)
+            while (stackTop > 0)
             {
-                ref FstArc arc = ref arcs[node.ArcStartIndex + i];
-                stack.Push(arc.TargetNodeIndex);
+                int nodeIndex = stackArr[--stackTop];
+                ref FstNode node = ref nodes[nodeIndex];
+                
+                if (node.IsFinal)
+                    count++;
+                
+                int arcCount = node.ArcCount;
+                int start = node.ArcStartIndex;
+
+                // Ensure stack capacity
+                if (stackTop + arcCount > stackArr.Length)
+                {
+                    var newArr = ArrayPool<int>.Shared.Rent(Math.Max(stackArr.Length * 2, stackTop + arcCount));
+                    Array.Copy(stackArr, newArr, stackTop);
+                    ArrayPool<int>.Shared.Return(stackArr);
+                    stackArr = newArr;
+                }
+
+                for (int i = 0; i < arcCount; i++)
+                {
+                    ref FstArc arc = ref arcs[start + i];
+                    stackArr[stackTop++] = arc.TargetNodeIndex;
+                }
             }
+        }
+        finally
+        {
+            ArrayPool<int>.Shared.Return(stackArr);
         }
         
         return count;
@@ -550,45 +625,74 @@ internal sealed class FstIndex
 
     public IEnumerable<string> EnumerateTerms()
     {
-        if (_forwardNodes.Length == 0) yield break;
-
-        var stack = new Stack<(int NodeIndex, string Prefix)>();
-        stack.Push((_forwardRootIndex, ""));
-
-        // Use a more complex DFS to yield in order
-        // Standard Stack DFS might yield in reverse if we push children in order.
-        // To yield in lexicographical order, we should traverse children in order.
-        // Since we can't easily pause a recursive traversal with "yield return" across stack frames without recursion,
-        // we can use a recursive helper function which is simpler in C# with yield return.
+        if (_forwardNodes.Length == 0) 
+            yield break;
         
-        foreach (var term in EnumerateTermsRecursive(_forwardRootIndex, ""))
-        {
-            yield return term;
-        }
-    }
+        // Iterative DFS to avoid stack overflow and allocation
+        // Stack stores (NodeIndex, NextArcIndex)
+        var stackArr = ArrayPool<(int NodeIndex, int ArcIndex)>.Shared.Rent(64);
+        int stackTop = 0;
+        var sb = new System.Text.StringBuilder();
 
-    private IEnumerable<string> EnumerateTermsRecursive(int nodeIndex, string prefix)
-    {
-        // Don't use ref here as it cannot be preserved across yield return
-        FstNode node = _forwardNodes[nodeIndex];
-        
-        if (node.IsFinal)
+        try
         {
-            yield return prefix;
-        }
+            stackArr[stackTop++] = (_forwardRootIndex, 0);
 
-        // Forward arcs are stored sorted by label
-        int startIndex = node.ArcStartIndex;
-        int count = node.ArcCount;
-        
-        for (int i = 0; i < count; i++)
-        {
-            // Copy arc data before yielding
-            FstArc arc = _forwardArcs[startIndex + i];
-            foreach (var term in EnumerateTermsRecursive(arc.TargetNodeIndex, prefix + arc.Label))
+            while (stackTop > 0)
             {
-                yield return term;
+                int frameIndex = stackTop - 1;
+                int nodeIndex = stackArr[frameIndex].NodeIndex;
+                int arcIndex = stackArr[frameIndex].ArcIndex;
+                
+                // Check Final (only when first visiting the node)
+                if (arcIndex == 0)
+                {
+                    if (_forwardNodes[nodeIndex].IsFinal)
+                    {
+                        yield return sb.ToString();
+                    }
+                }
+
+                // Check children
+                // We access array directly to avoid ref local issues across yield boundaries
+                int arcCount = _forwardNodes[nodeIndex].ArcCount;
+
+                if (arcIndex < arcCount)
+                {
+                    int arcStart = _forwardNodes[nodeIndex].ArcStartIndex;
+                    ref FstArc arc = ref _forwardArcs[arcStart + arcIndex];
+                    
+                    // Increment arc index for current node so next time we pick the next child
+                    stackArr[frameIndex].ArcIndex++;
+                    
+                    sb.Append(arc.Label);
+                    
+                    // Ensure capacity
+                    if (stackTop >= stackArr.Length)
+                    {
+                        var newArr = ArrayPool<(int NodeIndex, int ArcIndex)>.Shared.Rent(stackArr.Length * 2);
+                        Array.Copy(stackArr, newArr, stackTop);
+                        ArrayPool<(int NodeIndex, int ArcIndex)>.Shared.Return(stackArr);
+                        stackArr = newArr;
+                    }
+                    
+                    // Push Child
+                    stackArr[stackTop++] = (arc.TargetNodeIndex, 0);
+                }
+                else
+                {
+                    // Done with this node
+                    stackTop--;
+                    if (stackTop > 0)
+                    {
+                        sb.Length--;
+                    }
+                }
             }
+        }
+        finally
+        {
+            ArrayPool<(int NodeIndex, int ArcIndex)>.Shared.Return(stackArr);
         }
     }
 

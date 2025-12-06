@@ -4,6 +4,7 @@ using Infidex.Indexing.Fst;
 using Infidex.Indexing.ShortQuery;
 using Infidex.Internalized.CommunityToolkit;
 using Infidex.Tokenization;
+using System.Buffers;
 
 namespace Infidex.Scoring;
 
@@ -177,8 +178,6 @@ internal static class ShortQueryProcessor
 
         foreach (string pattern in prefixPatterns)
         {
-            IEnumerable<Term> matchingTerms;
-            
             if (fstIndex != null)
             {
                 int termCount = fstIndex.CountByPrefix(pattern.AsSpan());
@@ -189,21 +188,33 @@ internal static class ShortQueryProcessor
                     ? Math.Min(termCount, MaxFstTermsPerPrefix)
                     : termCount;
 
-                List<int> termIndices = [];
-                fstIndex.GetByPrefix(pattern.AsSpan(), termIndices, limit);
-                matchingTerms = termIndices
-                    .Select(termCollection.GetTermByIndex)
-                    .Where(t => t != null)!;
+                int[] buffer = ArrayPool<int>.Shared.Rent(limit);
+                try
+                {
+                    int count = fstIndex.GetByPrefix(pattern.AsSpan(), buffer.AsSpan(0, limit));
+                    for (int i = 0; i < count; i++)
+                    {
+                        Term? term = termCollection.GetTermByIndex(buffer[i]);
+                        if (term != null)
+                        {
+                            ProcessTermMatches(term, documents, docScores, matchedDocs,
+                                firstTokenPrefixDocs, searchLower, bestSegmentsMap, multiplier: 10);
+                        }
+                    }
+                }
+                finally
+                {
+                    ArrayPool<int>.Shared.Return(buffer);
+                }
             }
             else
             {
-                matchingTerms = termCollection.GetAllTerms().Where(t => t.Text?.StartsWith(pattern) == true);
-            }
-
-            foreach (Term term in matchingTerms)
-            {
-                ProcessTermMatches(term, documents, docScores, matchedDocs,
-                    firstTokenPrefixDocs, searchLower, bestSegmentsMap, multiplier: 10);
+                var matchingTerms = termCollection.GetAllTerms().Where(t => t.Text?.StartsWith(pattern) == true);
+                foreach (Term term in matchingTerms)
+                {
+                    ProcessTermMatches(term, documents, docScores, matchedDocs,
+                        firstTokenPrefixDocs, searchLower, bestSegmentsMap, multiplier: 10);
+                }
             }
         }
 

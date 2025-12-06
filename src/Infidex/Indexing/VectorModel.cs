@@ -314,7 +314,24 @@ public class VectorModel : IDisposable
     
     public void GetTermsByPrefix(string prefix, List<int> termIds)
     {
-        _fstIndex?.GetByPrefix(prefix.AsSpan(), termIds);
+        if (_fstIndex == null) return;
+        
+        var span = prefix.AsSpan();
+        int count = _fstIndex.CountByPrefix(span);
+        if (count == 0) return;
+        
+        int[] buffer = System.Buffers.ArrayPool<int>.Shared.Rent(count);
+        try
+        {
+            int written = _fstIndex.GetByPrefix(span, buffer.AsSpan(0, count));
+            termIds.EnsureCapacity(termIds.Count + written);
+            for(int i = 0; i < written; i++)
+                termIds.Add(buffer[i]);
+        }
+        finally
+        {
+            System.Buffers.ArrayPool<int>.Shared.Return(buffer);
+        }
     }
     
     public bool HasTermPrefix(string prefix)
@@ -642,12 +659,14 @@ public class VectorModel : IDisposable
         // Memory Index
         if (_fstIndex != null)
         {
-            List<int> memMatches = [];
-            _fstIndex.MatchWithinEditDistance1(text.AsSpan(), memMatches);
+            Span<int> memMatchesBuffer = stackalloc int[1024];
+            int memCount = _fstIndex.MatchWithinEditDistance1(text.AsSpan(), memMatchesBuffer);
             
-            if (memMatches.Count > 0)
+            if (memCount > 0)
             {
                 var memDocs = new List<int>();
+                int copyCount = Math.Min(memCount, memMatchesBuffer.Length);
+                Span<int> memMatches = memMatchesBuffer.Slice(0, copyCount);
                 foreach(int ordinal in memMatches)
                 {
                     Term? t = TermCollection.GetTermByIndex(ordinal);
@@ -671,12 +690,14 @@ public class VectorModel : IDisposable
             int baseDocId = _segmentDocBases[i];
             if (seg.FstIndex != null)
             {
-                List<int> segMatches = [];
-                seg.FstIndex.MatchWithinEditDistance1(text.AsSpan(), segMatches);
+                Span<int> segMatchesBuffer = stackalloc int[1024];
+                int segCount = seg.FstIndex.MatchWithinEditDistance1(text.AsSpan(), segMatchesBuffer);
                 
-                if (segMatches.Count > 0)
+                if (segCount > 0)
                 {
                     List<int> segDocs = [];
+                    int copyCount = Math.Min(segCount, segMatchesBuffer.Length);
+                    Span<int> segMatches = segMatchesBuffer.Slice(0, copyCount);
                     foreach(int ordinal in segMatches)
                     {
                         var penum = seg.GetPostingsEnumByOrdinal(ordinal, baseDocId);

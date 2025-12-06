@@ -303,8 +303,17 @@ internal sealed class WordMatcher : IDisposable
             int take = remainingBudget > 0 ? Math.Min(prefixCount, remainingBudget) : 0;
             if (take > 0)
             {
-                _fstIndex.GetByPrefix(span, termIds, take);
-                remainingBudget -= take;
+                int[] buffer = System.Buffers.ArrayPool<int>.Shared.Rent(take);
+                try
+                {
+                    int written = _fstIndex.GetByPrefix(span, buffer.AsSpan(0, take));
+                    for (int i = 0; i < written; i++) termIds.Add(buffer[i]);
+                    remainingBudget -= written;
+                }
+                finally
+                {
+                    System.Buffers.ArrayPool<int>.Shared.Return(buffer);
+                }
             }
         }
 
@@ -313,8 +322,17 @@ internal sealed class WordMatcher : IDisposable
             int take = remainingBudget > 0 ? Math.Min(suffixCount, remainingBudget) : 0;
             if (take > 0)
             {
-                _fstIndex.GetBySuffix(span, termIds, take);
-                remainingBudget -= take;
+                int[] buffer = System.Buffers.ArrayPool<int>.Shared.Rent(take);
+                try
+                {
+                    int written = _fstIndex.GetBySuffix(span, buffer.AsSpan(0, take));
+                    for (int i = 0; i < written; i++) termIds.Add(buffer[i]);
+                    remainingBudget -= written;
+                }
+                finally
+                {
+                    System.Buffers.ArrayPool<int>.Shared.Return(buffer);
+                }
             }
         }
         
